@@ -10,7 +10,7 @@ library(OpenStreetMap)
 
 
 # set data and output files
-path <- "//worldpop.files.soton.ac.uk/Worldpop/Projects/WP000008_UNFPA_PNG/Working/Chris/reviews/sim_study2"
+path <- "//worldpop.files.soton.ac.uk/Worldpop/Projects/WP000008_UNFPA_PNG/Working/Chris/reviews/sim_study2" ## please change this to your own working directory
 out_path <- paste0(path, "/outputs")
 file_path <- paste0(path, "/file")
 
@@ -217,7 +217,7 @@ post_maps <- function(cu.est, shp)
 ###-----Simulate the coordinates based on the lon and lat of PNG
 # Prepare the spatial data
 library(sf)
-shp_png <- st_read(paste0(path, "/PNG_CU_32100_B.shp"))
+shp_png <- st_read("https://raw.github.com/wpgp/Small-area-population-estimation-from-health-intervention-campaign-surveys-and-partial-Observations/main/cu_boundary.gpkg")
 shp <- as(st_geometry(shp_png), "Spatial") # converts sf data to sp. 
 plot(shp)
 
