@@ -16,7 +16,7 @@ library(OpenStreetMap)
 
 
 # Set the directory where the simulated data are stored so they are easily retrieved
-path <- "//worldpop.files.soton.ac.uk/Worldpop/Projects/WP000008_UNFPA_PNG/Working/Chris/reviews/sim_study2"
+path <- "//worldpop.files.soton.ac.uk/Worldpop/Projects/WP000008_UNFPA_PNG/Working/Chris/reviews/sim_study2" # please change to your own working directory
 out_path <- paste0(path, "/outputs")
 file_path <- paste0(path, "/file")
 setwd(out_path)
