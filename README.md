@@ -1,5 +1,8 @@
 # Small-area-population-estimation-from-health-intervention-campaign-surveys-and-partial-Observations
 # Nnanatu et al. (2024)
+
+#(IMPORTANT NOTE: Please use R version 4.0.2 to reproduce the model results. There would be slight differences in the parameter estimates when different versions are used.)
+
 This repository provides the R scripts for the 'Small area population estimation from health intervention data ...' paper. The scripts include the simulation study and the application to PNG datasets.  
 
 Below, the description of each of the files included within this repository is provided:
@@ -13,5 +16,7 @@ There are four R scripts included within this folder:
 
 # Input Data
 Below are two major input datasets used: 
-1) surv_data: this is the input data containing counts of people, building counts, and all the geospatial covariates prepared at the census unit level. (there are two versions of the file - text or .txt (surv_data.txt) and .csv (surv_data.csv)
+1) survey_data.RData: this is the input data containing counts of people, building counts, and all the geospatial covariates prepared at the census unit level. (please use only 'survey_data.RData'. It contains a data frame called 'covs' which ais the main data. 
 2) cu_boundary.gpkg: this matches perfectly with the surv_data and contains most of the variables in the .csv file. The centroids of the c_boundary file is used as the longitude and latituide for the surv_data file. 
+
+# Please kindly leave us a feedback to help improve our future outputs. 
