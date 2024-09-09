@@ -4,6 +4,10 @@
 ####--INSTITUTION: WORLDPOP, UNIVERSITY OF SOUTHAMPTON 
 ####--DATE:19 DECEMBER 2022. REVIEWED: 25/03/2024
 ###=====================================================================================================
+#           
+#      DATA PREPARATION AND COVARIATES SELECTION
+#      -----------------------------------------
+#------------------------------------------------------------------------------------------------
 
 rm(list=ls()) #---Clear workspace
 
@@ -25,43 +29,38 @@ library(INLA)
 lapply(packages, library, character.only = TRUE) ##--access the libraries
 
 ##-------------------------------------------------------------------------------
-###--Specify various file paths (set input and output paths)
+###--LOAD DATA FROM GITHUB REPOSITORY
 #--------------------------------------------------------------------------------
-path <- "//worldpop.files.soton.ac.uk/Worldpop/Projects/WP000008_UNFPA_PNG/Working/Chris/paper/paper1/real_data/"
-surv_path <- paste0(path, "input_data/survey/")
-shape_path <- paste0(path, "input_data/boundary/")
-results_path <- paste0(path, "results/")
+#Demographic data: Census unit (CU) - level survey data (contains observed count of people per CU)
+githublink <- "https://raw.github.com/wpgp/Small-area-population-estimation-from-health-intervention-campaign-surveys-and-partial-Observations/main/survey_data.RData"
+load(url(githublink))
+names(covs) # the data frame is called 'covs' 
 
-#-------------------------------------------------------------------------------
-#------------------------Load datasets-----------------------------------------        
-#--------------------------------------------------------------------------------
-shp_png <- st_read(paste0(shape_path,"CU/PNG_CU_32100_B.shp")) #load the CU shapefile
-
-load(paste0(surv_path,"ModelDataPNG_BI.RData")) # load the .Rdata containing the survey data
-
-
-#-----------------------------------------------------------------------------
-#--------------------------------------------------------------------------
-###---Explore  and clean data ----------------------------------------
-#--------------------------------------------------------------------------
-ls() # check the contents of the file
-    # the survey dataframe is called 'covs' 
+# CU level shapefile
+cu_shp <- st_read("https://raw.github.com/wpgp/Small-area-population-estimation-from-health-intervention-campaign-surveys-and-partial-Observations/main/cu_boundary.gpkg")
+names(cu_shp)
+str(cu_shp)
+plot(cu_shp["Shape_Area"])
 
 
-names(covs); str(covs)
-covDF <- as.data.frame(covs) # data should be a data frame
+# convert sf shapefile to sp 
+shp <- as(st_geometry(cu_shp), "Spatial") # converts sf data to sp. 
+plot(shp)
+
+##
+rm(cu_shp) # remove duplicated filr to conserve memory
+
+###
+ls() # view console contents
+covDF <- as.data.frame(covs) # convert to a data frame
+
+
 #plot(covDF$lon, covDF$lat)
 #names(covDF); str(covDF); dim(covDF); dim(shp)# shp has one extra row
 
-# clean 
-shp_png <- shp_png[-32100,] #--remove row 32100 from the shapefile as it does not exist
-#plot(shp["Shape_Area"])
-dim(covDF); dim(shp_png) #---confirm ir is now same number of rows as the survey data
-
-# convert sf shapefile to sp 
-shp <- as(st_geometry(shp_png), "Spatial") # converts sf data to sp. 
-plot(shp)
-
+shp <- shp[-32100,] #--remove row 32100 from the shapefile as it does not exist
+dim(covDF); dim(shp) #---confirm
+#--------------------------------------------------------------------------
 
 #--------------------------------------------------------------------------
 ##----Extract the coordiates - the centroids of the CUs
@@ -69,10 +68,13 @@ plot(shp)
 library(sp)
 covDF$lon <- coordinates(shp)[,1]#--add lon-lat to the data
 covDF$lat <- coordinates(shp)[,2]
-covDF2 <- covDF
+datt <- covDF
+#---------------------------------------------------------------------------
+
+
 
 #---------------------------------------------------------------------------
-# covariates Z-score scaling 
+# covariates Z-score scaling function
 stdize <- function(x)
 {
   stdz <- (x - mean(x, na.rm=T))/sd(x, na.rm=T)
@@ -90,9 +92,6 @@ mod_metrics2 <- function(obs, pred)
   BIAS = mean(residual, na.rm=T)
   IMPRECISION = sd(residual, na.rm=T)
   COR = cor(obs[!is.na(obs)], pred[!is.na(obs)])
-  WAIC = mod$waic$waic
-  DIC = mod$dic$dic
-  CPO = -sum(log(mod$cpo$cpo), na.rm=T)
   output <- list(MAE  = INACCURACY ,
                  RMSE = RMSE,
                  BIAS = abs(BIAS),
@@ -103,87 +102,18 @@ mod_metrics2 <- function(obs, pred)
 #--------------------------------------------------------------------------
 # More data preparation s
 #----------------------------------------------------------------------------
-datt <- covDF2 #-------rename data
-mod_covs <- 34:85 ; length(34:85)#----COVARIATES COLUMNS in datt
-
-head(datt[, mod_covs]) #-----view the covariates columns
-
-# apply covariates scaling to only the model covariates
-datt[,mod_covs] <- apply(datt[,mod_covs], 2, stdize)   
-
-# explore the datasets 
-par(mfrow=c(1,1))
-hist(datt$POPN)  #---observed pop total per CU
-boxplot(datt$POPN) 
-hist(datt$BLDG21) #---Building intensity ; hist(log(datt$BLDG21))
-#------------------------------------------------------------------------
-
-# run covariates selection 
-colnames(datt)[mod_covs] <- paste0("x", 1:52, sep="") #--rename covariates 
-names(datt)  #------confirm
-
-# divide data into observed/training and unobserved/test
-dim(dat_train <- datt[!is.na(datt$POPN),]) #-- Training set - all CUs with Observations only (16872 CUs)
-dim(dat_pred <- datt[is.na(datt$POPN),])   #-- Prediction set - all unsampled CUs (15095 CUs)
-
-#----------------Covariates Selection-----------------------------------
-# Run GLM-based stepwise selection 
-
-#install.packages("car")
-library(car) ##--For calculating variance inflation factor (vif)
-library(dplyr)
-library(tidyverse)
-
-
-#######-------For Density================================================================
-names(dat_train)
-covs_pop <- dat_train[,c(91,mod_covs)] #--subset for variables selection
-covs_pop1 <- covs_pop %>% drop_na() #- model covariates only without NAs
-dim(covs_pop1 <- covs_pop1[is.finite(covs_pop1$POPN),]) #--checks
-
-#-----------------FITTIG THE STEPWISE REG MODELS-------------------------------------
-fpop <- glm.nb(POPN ~., data=covs_pop1) #---negative binomial
-
-step_pop <- stepAIC(fpop, scale = 0,
-                    direction = c("both"),
-                    trace = 1, keep = NULL, steps = 1000, use.start = FALSE,
-                    k = 2)
-step_pop
-
-# only sttaistocally significant variables with vif less than 5 are retained
-vif_pop = vif(fpop2)
-vif_pop[which(vif_pop < 5)]
-
-# Best fit covariates eventually selected
-cov_pop <- c("x3","x11","x15","x29","x30", "x31","x32","x35", "x36",
-             "x39","x45","x46","x48","x51","x52")
-
-cov_names <- names(covDF2)[mod_covs]
-covariates_pop <- cov_names[c(3, 11, 15, 29, 30, 31, 32, 
-                              35, 36, 39, 45, 46, 48, 51, 52)]
-pop_covs <- data.frame(cov = cov_pop, name=covariates_pop)
-#-------------------------------------
-
-##----Make correlation plot
-#install.packages("corrplot")
-require(corrplot)
-png(paste0(results_path,"cor_plots.png"))
-corrplot(
-  cor(covs_pop[,cov_pop]),
-  method = 'square',
-  type = 'upper',
-  tl.col = 'black',
-  tl.cex = 1,
-  col = colorRampPalette(c('purple', 'dark green'))(200)
-)
-dev.off()
 
 
 #---------------------------------------------------------------------
 #           BAYESIAN STATISTICAL MODELLING
 #-------------------------------------------------------------------
-
 # Define rhe points for both training and testint/predictions separately
+# Subset data into training and test sets
+dim(dat_train <- datt[!is.na(datt$POPN),]) #-- Training set - all CUs with Observations only (16872 CUs)
+dim(dat_pred <- datt[is.na(datt$POPN),])   #-- Prediction set - all unsampled CUs (15095 CUs)
+
+
+# specify GPS coordinates for each dataset  
 coords = cbind(datt$lon, datt$lat)
 coords_train = cbind(dat_train$lon, dat_train$lat)
 coords_pred = cbind(dat_pred$lon, dat_pred$lat)
@@ -231,19 +161,16 @@ data_locs
 ##
 rm(coords_pred, dat_pred) # free some memory spaces 
 #-------Extract boundary for mesh
-
-
-###----Build non-hull mesh
 bnd <- inla.nonconvex.hull(as.matrix(coords),-0.03, -0.05, resolution=c(100,100))
+
+###----Build non-convex hull mesh
 mesh <- inla.mesh.2d(boundary = bnd, max.edge=c(0.6,4), cutoff=0.4)
 
 
 # Visualise mesh
 par(mfrow=c(1,1))
-#png(paste0(results_path, "/plots/mesh.png"))
 plot(mesh)  
 points(coords, cex=0.1, col="red", pch=16)
-#dev.off()
 mesh$n #----number of nodes
 
 #----------------------------------------------------------------------------------
@@ -259,32 +186,51 @@ spde <- inla.spde2.matern(mesh, alpha=2)
 iset <- inla.spde.make.index(name = "spatial.field", spde$n.spde)
 
 #-------Fitting the models----------------------------
-
-#--Recode for random effects 
 #---All data
-datt$prov <- datt$Prov_ID # province random effects
-datt$set_typ <- as.factor(as.numeric(datt$TYPE)) # settlement type random effects
+#--Recode for random effects 
+datt$prov <- factor(datt$Prov_ID) # province random effects
+datt$TYPE <- factor(datt$TYPE)
+datt$set_typ <- as.factor(as.numeric(datt$TYPE))# settlement type random effects
+# 1 - non-village; 2 - rural; 3 - urban
+#table(datt$TYPE) 
+#table(datt$set_typ) 
 
 
-# Add settlement type and province interactions
+#---settlement - type and province nesting
 Zsp <- as(model.matrix( ~ 0 + prov:set_typ, data = datt), "Matrix") 
 datt$IDsp <- 1:nrow(datt)
 datt$set_prov <- as.factor(apply(Zsp, 1, function(x){names(x)[x == 1]}))#--nesting
 
-#---------------------------------------------------------------------------------
-#      Gaussian-Gamma
-#---------------------------------------------------------------------------------
 
-###-----Building Stack
-cov_bld <- datt[,c("x3","x15","x27","x30", "x31","x33","x34", "x35","x36",
-                   "x38","x46","x50","x52","set_prov", "set_typ", 
-                   "prov", "IDsp")]; dim(cov_bld)
+#--------------------------------------------------------------------------------
+# prepare data for modelling
+names(datt)
+mod_covs <- 34:85 ; length(34:85)#----52 covariates
+
+head(datt[, mod_covs]) #-----view the first sic rows of the covariates columns
+
+# recode covariates (this is just for convenience)
+colnames(datt)[mod_covs] <- paste0("x", 1:52, sep="") #--rename covariates 
+names(datt)  #------check
+
+# apply covariates scaling to the model covariates only
+datt[,mod_covs] <- apply(datt[,mod_covs], 2, stdize)   
+
+#---------------------------------------------------------------------------------
+#      Fit building intensity model 
+#---------------------------------------------------------------------------------
+# select model covariates and key variables
+best_covs_bld <- c("x3","x15","x27","x30", "x31","x33","x34","x35", "x36",
+                   "x38","x46","x50","x52") # the best covariates selected based on stepwise algorithms
+
+
+cov_bld <- datt[,c(best_covs_bld, "set_prov", "set_typ",  "prov", "IDsp")] # select only relevant variables
 
 #---Build the stack for the bld
-datt$BLDG21 <- datt$BLDG21 + 1# transformed sto have at least a value of 1 
+datt$BLDG21 <- datt$BLDG21 + 1# at least a value of 1 to allow for log transformation
 stk_bld <- inla.stack(data=list(y=log(datt$BLDG21)), #the response
                       
-                      A=list(A,1),  #the A matrix; the 1 is included to make the list(covariates)
+                      A=list(A,1),  #the PROJECTION matrix
                       
                       effects=list(c(list(Intercept=1), #the Intercept
                                      iset),  #the spatial index
@@ -295,75 +241,105 @@ stk_bld <- inla.stack(data=list(y=log(datt$BLDG21)), #the response
                       tag='est_bld')
 
 
-##-----------------------------------------------------
-# Model fitting
-#-------------------------------------------------------
-
+##--------------------------------------------------------------------------------------
+# Model fitting (the best fit model)
 # Model for building intensity (this is the best fit model following initial multiple iterations)
-fbld3<- y ~ -1 + Intercept +  x3 + x15 + x27 + x30 + x31 + x33 + x34 + x35 + x36 + 
+f_bld3 <- y ~ -1 + Intercept +  x3 + x15 + x27 + x30 + x31 + x33 + x34 + x35 + x36 + 
   x38 + x46 + x50 + x52 + f(spatial.field, model=spde) + f(IDsp, model='iid') + f(set_prov, model="iid")
 
-bmod3<-inla(fbld3, #the formula
-            data=inla.stack.data(stk_bld,spde=spde),  #the data stack
-            family= 'gaussian',   #which family the data comes from
-            control.predictor=list(A=inla.stack.A(stk_bld),compute=TRUE),  #compute gives you the marginals of the linear predictor
-            control.compute = list(dic = TRUE, waic = TRUE, cpo=TRUE,config = TRUE), #model diagnostics and config = TRUE gives you the GMRF
-            verbose = FALSE) #can include verbose=TRUE to see the log of the model runs
+#--------
+# the function below takes about  4 minutes minutes to run on Intel(R) Core(TM) i5-6600 CPU @ 3.30 GHz; 32GB RAM Machine
+system.time(bmod3<-inla(f_bld3, #the formula
+                        data=inla.stack.data(stk_bld,spde=spde),  #the data stack
+                        family= 'gaussian',   # probability distribution of the response variable
+                        control.predictor=list(A=inla.stack.A(stk_bld),compute=TRUE),  #compute gives you the marginals of the linear predictor
+                        control.compute = list(dic = TRUE, waic = TRUE, cpo=TRUE,config = TRUE), #model diagnostics and config = TRUE gives you the GMRF
+                        verbose = FALSE)) #can include verbose=TRUE to see the log of the model runs
 summary(bmod3) #----model summary
-bmod3$summary.fix #--extract fixed effects 
-bmod3$summary.random #--extract random effects 
-bind3 <-inla.stack.index(stk_bld, "est_bld")$data #--estimation indices 
+
+bind3 <-inla.stack.index(stk_bld, "est_bld")$data #--extract estimation indices 
+
+# obtain the mean posterior estimates
 bfit3 <- exp(bmod3$summary.linear.predictor[bind3,"mean"]) #--extract the backtransformed building intensity
-sum(bfit3)
-bfit3L <- exp(bmod3$summary.linear.predictor[bind3,"0.025quant"]) #--extract the backtransformed lower building intensity
-bfit3U <- exp(bmod3$summary.linear.predictor[bind3,"0.975quant"]) #--extract the backtransformed upper building intensity
 
 
-# explore model outputs
-(bld3<- cbind(datt$BLDG21, bfit3))
-apply(bld3, 2, sum, na.rm=T)
-plot(datt$BLDG21, bfit3, col=c(1,2))
-abline(a=0, b=1)
-cor(datt$BLDG21, bfit3)
+#--extract fixed effects to 4 decimal places
+(betab <- round(bmod3$summary.fix,4))
 
 
-# Add the predicted building 
+# Add the predicted building intensity to the data
 datt$bld_pred <- bfit3
 
-#--extract fixed effects 
-betab <- bmod3$summary.fix 
+ls() # view contents of the workspace
+rm(plot.dat, plot.dat1, plot.dat2, surv_df) # remove some irrelevant or duplicated files
+#------------------------------------------------------------------------------------------------
+#                      Fit population density model
+#------------------------------------------------------------------------------------------------
 
-
-##---Carry out model checks using waic
-mod.fitb<- bmod3$waic$waic
-(b_mets <- mod_metrics2(datt$BLDG21, bfit3, bmod3))
-
-
-#------------------------------------------------
-#  Define density
-#------------------------------------------------
-# TSBHM - uses the bias-adjusted settlement/building data
-datt$dens2 <- datt$POPN/datt$bld_pred 
-hist(log(datt$dens2), col="brown")
-datt$dens2[datt$dens2==0] = 0.000001 ####4918 16520 16521 16527 18142 18149 18262 18267 18297 18414 20900 20908; 12 CU's no observations
-
-
+#------------------------
 # BHM  - uses the imperfectly observed settlement/building data directly 
-datt$bld <- datt$BLDG21 # rename the building intensity variable
-datt$bld[datt$POPN==0] =NA # set all 0 POPULATION to NA to allow for prediction and avoid dividing by zero
-datt$dens3 <- datt$POPN/datt$bld
-datt$dens3[datt$dens3==0] = 0.000001 ####4918 16520 16521 16527 18142 18149 18262 18267 18297 18414 20900 20908; 12 CU's no observations
+#------------------------
+datt$bld <- datt$BLDG21
+datt$bld[datt$POPN==0] =NA # set all settlements without population to NA to allow for prediction
+datt$dens_bhm <- datt$POPN/datt$bld
+datt$dens_bhm[datt$dens_bhm==0] = 0.000001 # avoids mathematical issues with taking log of 0
+hist(log(datt$dens_bhm))
+
+
+# use the best covariates for 
+best_covs_dens <- c("x3","x11","x15","x29","x30","x31","x32", "x35","x36","x39","x45","x46","x48","x51","x52")
 
 ####---Density Stack
-covars_dens <- datt[,c("x3","x11","x15","x29","x30", "x31","x32","x35", "x36",
-                       "x39","x45","x46","x48","x51","x52","set_prov", "set_typ", 
-                       "prov", "IDsp")]; dim(covars_dens)
+covars_dens <- datt[,c(best_covs_dens,"set_prov", "set_typ","prov", "IDsp")]; dim(covars_dens)
 
 #---Build the stack for the training set
-##---Bias Corrected (TSBHM)
-stk_dens <- inla.stack(data=list(y=datt$dens2), #the response
+##--(BHM)
+stk_bhm<- inla.stack(data=list(y=datt$dens_bhm), #the response
+                     
+                     A=list(A,1),  #the PROJECTION matrix
+                     
+                     effects=list(c(list(Intercept=1), #the Intercept
+                                    iset),  #the spatial index
+                                  #the covariates
+                                  list(covars_dens)
+                     ), 
+                     #this is a quick name so you can call upon easily
+                     tag='est_bhm')
+
+f_bhm <- y ~ -1 + Intercept +  x3 + x11 + x15 + x29 + x30 + x31 + x32 + x35 + x36 + 
+  x39 + x45+ x46 + x48 + x51 + x52 + f(spatial.field, model=spde) + f(IDsp, model='iid') +
+  f(set_typ, model='iid')
+
+# the function below takes about 8 minutes to run on Intel(R) Core(TM) i5-6600 CPU @ 3.30 GHz; 32GB RAM Machine
+system.time(mod_bhm <-inla(f_bhm, #the formula
+                           data=inla.stack.data(stk_bhm,spde=spde),  #the data stack
+                           family= 'gamma',   #which family the data comes from
+                           control.predictor=list(A=inla.stack.A(stk_bhm),compute=TRUE),  #compute gives you the marginals of the linear predictor
+                           control.compute = list(dic = TRUE, waic = TRUE, cpo=TRUE,config = TRUE), #model diagnostics and config = TRUE gives you the GMRF
+                           verbose = FALSE)) #can include verbose=TRUE to see the log of the model runs
+#summary(mod_bhm) #----model summary
+
+ind_bhm <-inla.stack.index(stk_bhm, "est_bhm")$data #--estimation indices 
+fit_bhm <- exp(mod_bhm$summary.linear.predictor[ind_bhm,"mean"]) #--extract the backtransformed pop_hat
+
+sum(fitbhm <- fit_bhm*datt$bld, na.rm=T) # check total count
+
+#--------------------------------------------------
+# TSBHM - uses the bias-adjusted settlement/building data
+#-------------------------------------------------------
+datt$dens_tsbhm <- datt$POPN/datt$bld_pred # uses the predicted (bias-corrected) building intensity
+datt$dens_tsbhm[datt$dens_tsbhm==0] =  0.000001 # avoids mathematical issues with taking log of 0
+
+# use the best covariates for 
+best_covs_dens <- c("x3","x11","x15","x29","x30","x31","x32", "x35","x36","x39","x45","x46","x48","x51","x52")
+####---Density Stack
+covars_dens <- datt[,c(best_covs_dens,"set_prov", "set_typ","prov", "IDsp")]; dim(covars_dens)
+
+#---Build the stack for the training set
+##--(tsbhm)
+stk_tsbhm<- inla.stack(data=list(y=datt$dens_tsbhm), #the response
                        
-                       A=list(A,1),  #the A matrix; the 1 is included to make the list(covariates)
+                       A=list(A,1),  #the PROJECTION matrix
                        
                        effects=list(c(list(Intercept=1), #the Intercept
                                       iset),  #the spatial index
@@ -371,160 +347,34 @@ stk_dens <- inla.stack(data=list(y=datt$dens2), #the response
                                     list(covars_dens)
                        ), 
                        #this is a quick name so you can call upon easily
-                       tag='est_dens')
+                       tag='est_tsbhm')
 
 
-##--(BHM)
-stk3<- inla.stack(data=list(y=datt$dens3), #the response
-                  
-                  A=list(A,1),  #the A matrix; the 1 is included to make the list(covariates)
-                  
-                  effects=list(c(list(Intercept=1), #the Intercept
-                                 iset),  #the spatial index
-                               #the covariates
-                               list(covars_dens)
-                  ), 
-                  #this is a quick name so you can call upon easily
-                  tag='est3')
-
-
-###---SPATIAL---------------------------------
-##========================== TSBHM
-form1a <- y ~ -1 + Intercept +  x3 + x11 + x15 + x29 + x30 + x31 + x32 + x35 + x36 + 
+f_tsbhm <- y ~ -1 + Intercept +  x3 + x11 + x15 + x29 + x30 + x31 + x32 + x35 + x36 + 
   x39 + x45+ x46 + x48 + x51 + x52 + f(spatial.field, model=spde) + f(IDsp, model='iid') +
   f(set_typ, model='iid')
 
-mod1a <-inla(form1a, #the formula
-             data=inla.stack.data(stk_dens,spde=spde),  #the data stack
-             family= 'gamma',   #which family the data comes from
-             control.predictor=list(A=inla.stack.A(stk_dens),compute=TRUE),  #compute gives you the marginals of the linear predictor
-             control.compute = list(dic = TRUE, waic = TRUE, cpo=TRUE,config = TRUE), #model diagnostics and config = TRUE gives you the GMRF
-             verbose = FALSE) #can include verbose=TRUE to see the log of the model runs
-#summary(mod1c) #----model summary
+# the function below takes approximately 7 minutes to run on Intel(R) Core(TM) i5-6600 CPU @ 3.30 GHz; 32GB RAM Machine
+system.time(mod_tsbhm <-inla(f_tsbhm, #the formula
+                             data=inla.stack.data(stk_tsbhm,spde=spde),  #the data stack
+                             family= 'gamma',   #which family the data comes from
+                             control.predictor=list(A=inla.stack.A(stk_tsbhm),compute=TRUE),  #compute gives you the marginals of the linear predictor
+                             control.compute = list(dic = TRUE, waic = TRUE, cpo=TRUE,config = TRUE), #model diagnostics and config = TRUE gives you the GMRF
+                             verbose = FALSE)) #can include verbose=TRUE to see the log of the model runs
+
+summary(mod_tsbhm) #----model summary
+ 
+ind_tsbhm <-inla.stack.index(stk_tsbhm, "est_tsbhm")$data #--estimation indices 
+fit_tsbhm <- exp(mod_tsbhm$summary.linear.predictor[ind_tsbhm,"mean"]) #--extract the backtransformed pop_hat
+sum(fittsbhm <- fit_tsbhm*datt$bld_pred, na.rm=T) 
 
 
-betagg <- mod1a$summary.fix #--extract fixed effects 
-#write.csv(round(betagg,5), paste0(results_path,"/updated2/Betas_for_density_model.csv"))
-
-#mod1$summary.random #--extract random effects 
-ind1 <-inla.stack.index(stk_dens, "est_dens")$data #--estimation indices 
-
-# predicted population density and uncertainties
-fit1a <- exp(mod1a$summary.linear.predictor[ind1,"mean"]) #--extract the backtransformed pop_hat
-fit1aU <- exp(mod1a$summary.linear.predictor[ind1,"0.975quant"]) #--extract the backtransformed pop_hat
-fit1aL <- exp(mod1a$summary.linear.predictor[ind1,"0.025quant"]) #--extract the backtransformed pop_hat
-
-
-# predicted population count and uncertainties
-fit11a <- fit1a*datt$bld_pred
-fit11aU <- fit1aU*datt$bld_pred
-fit11aL <- fit1aL*datt$bld_pred
-(sum_fit <- sum(fit1a*datt$bld_pred))
-(POPa <- cbind(datt$POPN, fit11a))
-apply(POPa, 2, sum, na.rm=T)
-plot(datt$POPN, fit11a, col=c("red", "blue"))
-abline(a=0, b=1)
-cor(datt$POPN, fit11a)
-
-#######
-###---SPATIAL---------------------------------
-##========================== BHM
-form1b <- y ~ -1 + Intercept +  x3 + x11 + x15 + x29 + x30 + x31 + x32 + x35 + x36 + 
-  x39 + x45+ x46 + x48 + x51 + x52 + f(spatial.field, model=spde) + f(IDsp, model='iid') +
-  f(set_typ, model='iid')
-
-mod1b <-inla(form1b, #the formula
-             data=inla.stack.data(stk3,spde=spde),  #the data stack
-             family= 'gamma',   #which family the data comes from
-             control.predictor=list(A=inla.stack.A(stk3),compute=TRUE),  #compute gives you the marginals of the linear predictor
-             control.compute = list(dic = TRUE, waic = TRUE, cpo=TRUE,config = TRUE), #model diagnostics and config = TRUE gives you the GMRF
-             verbose = FALSE) #can include verbose=TRUE to see the log of the model runs
-#summary(mod1c) #----model summary
-
-#mod1$summary.random #--extract random effects 
-ind3 <-inla.stack.index(stk3, "est3")$data #--estimation indices 
-fit1b <- exp(mod1b$summary.linear.predictor[ind3,"mean"]) #--extract the backtransformed pop_hat
-fit1bU <- exp(mod1b$summary.linear.predictor[ind3,"0.975quant"]) #--extract the backtransformed pop_hat
-fit1bL <- exp(mod1b$summary.linear.predictor[ind3,"0.025quant"]) #--extract the backtransformed pop_hat
-
-fit11b <- fit1b*datt$bld
-fit11bU <- fit1bU*datt$bld
-fit11bL <- fit1bL*datt$bld
-(sum_fit <- sum(fit1b*datt$bld, na.rm=T))
-(POPb <- cbind(datt$POPN, fit11b))
-apply(POPb, 2, sum, na.rm=T)
-plot(datt$POPN, fit11b, col=c("red", "blue"))
-abline(a=0, b=1)
-cor(datt$POPN, fit11b)
-
-
-
-(met1a <- mod_metrics2(datt$POPN, fit11a, mod1a))
-(met1b <- mod_metrics2(datt$POPN, fit11b, mod1b))
-
-
-(met.1 <- data.frame(mod1a = unlist(met1a),
-                     mod1b = unlist(met1b)))
-
-
-par(mfrow=c(1,2))
-plot(datt$POPN, fit11a, col=c("red", "blue"))
-abline(a=0, b=1)
-plot(datt$POPN, fit11b, col=c("red", "blue"))
-abline(a=0, b=1)
-par(mfrow=c(1,1))
-
-
-
-
-#Compute statistics in terms or range and variance
-post_effa <- inla.spde2.result(inla = mod1a, name = "spatial.field",
-                               spde = spde, do.transf = TRUE)
-
-post_effb <- inla.spde2.result(inla = mod1b, name = "spatial.field",
-                               spde = spde, do.transf = TRUE)
-
-out_path <- "//worldpop.files.soton.ac.uk/Worldpop/Projects/WP000008_UNFPA_PNG/Working/Chris/paper"
-##--TSBHM----Posterior parameter estimates
-beta_a <- round(mod1a$summary.fix[,c(1,2,3,5)],4) #--extract fixed effects 
-prec_gam_a <- round(mod1a$summary.hyperpar[c(1,4,5),c(1,2,3,5)],4)#--Precision for Gamma observations AND RANDOM EFFECTS
-marg_var_a <- round(as.vector(unlist(inla.zmarginal(post_effa$marginals.variance.nominal[[1]]))[c(1,2,3,5)]),4)
-waic_a <- mod1a$waic$waic
-cpo_a <- -sum(log(mod1a$cpo$cpo), na.rm=T)
-post_est_a <- bind_rows(beta_a, prec_gam_a)
-rownames(post_est_a) <- c("Int",rownames(post_est_a)[2:16], "eps", "tau_iid", "tau_st")
-write.csv(post_est_a, paste0(out_path, "/post_est_mod1a.csv"))
-
-
-
-##--BHM----Posterior parameter estimates
-beta_b <- round(mod1b$summary.fix[,c(1,2,3,5)],4) #--extract fixed effects 
-prec_gam_b <- round(mod1b$summary.hyperpar[c(1,4,5),c(1,2,3,5)],4)#--Precision for Gamma observations AND RANDOM EFFECTS
-marg_var_b <- round(as.vector(unlist(inla.zmarginal(post_effb$marginals.variance.nominal[[1]]))[c(1,2,3,5)]),4)
-waic_b <- mod1b$waic$waic
-cpo_b <- -sum(log(mod1b$cpo$cpo), na.rm=T)
-post_est_b <- bind_rows(beta_b, prec_gam_b)
-rownames(post_est_b) <- c("Int",rownames(post_est_b)[2:16], "eps", "tau_iid", "tau_st")
-write.csv(post_est_b, paste0(out_path, "/post_est_mod1b.csv"))
-
-
-var_b <- inla.zmarginal(post_effb$marginals.variance.nominal[[1]])
-
-
-
-write.csv(round(betab,5), paste0(results_path,"/updated2/Betas_for_building_intensity_model.csv"))
-
-
-#summary(mod1c) #----model summary
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+##--------------------------------------------------------------------------------------------
 #####-----POSTERIOR SIMULATION-----------------------------------------------------
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-########################
-
+#------------------------------------------------------------------------------------------
+# extract posterior parameter estimates of random effects
 stypp <- function(mod, dat)
 {
-  #datt$set_typ2 <- rep(1, nrow(datt))
   dat$stype <- rep(1, nrow(dat))
   st <- mod$summary.random$set_typ$mean
   uniq <- unique(dat$set_typ)
@@ -539,38 +389,59 @@ stypp <- function(mod, dat)
   }
   dat$stype
 }
-datt$set_typ_a <- stypp(mod1a, datt)
-datt$set_typ_b <- stypp(mod1b, datt)
 
-datt4 <- datt
-datt$set_re <- datt$set_typ_a 
-datt4$set_re <- datt$set_typ_b 
+# duplicate data
+datt_bhm <- datt
+
+# settlement type random effects
+datt_bhm$set_re <- stypp(mod_bhm, datt_bhm)
+datt$set_re <- stypp(mod_tsbhm, datt)
+
+# bhm
+datt_bhm$BLD <- datt_bhm$bld
+
+# tsbhm
 datt$BLD <- datt$bld_pred
-datt4$BLD <- datt$bld
-names(datt4)
 
-###################################=======-------------------------GG
+
+
+# function for posterior simulation and prediction-------------
+#-----------------------------------------------------------
+# Draws parameter samples from the posterior in each iteration
+# Uses each set of drawn parameter values to make predictions of the response
+# Obatins and stores aggregated totals in each iteration 
+#----------------------------------------------------------
+
 simPops_gg <- function(model, dat, Aprediction, run)
 {
+  
+  #--------------------------------------------------
+  # model: the inla model from where samples will be drawn 
+  # dat: the data frame containing the prediction covariates
+  # Aprediction: projection matrix building over the prediction domains
+  # run: number of iterations (any value from 30 and above may suffice)
+  # No need to worry about convergence as INLA is deterministic and samples from the stationary distribution
+  #----------------------------------------
+ 
   fixedeff  <- dens_hat <- pop_hat <- matrix(0, nrow=nrow(dat), ncol = run)
-  # inla.seed = as.integer(runif(1)*.Machine$integer.max)
-  inla.seed =  481561959
+  #inla.seed = as.integer(runif(1)*.Machine$integer.max) ## generates sample seed
+  inla.seed =  481561959 # simulation seed for reproducible samples
   set.seed(inla.seed)
   print(inla.seed)
-  m1.samp <- inla.posterior.sample(run, model, seed = inla.seed ,selection=list(x3=1, x11=1, x15=1,
+  m1.samp <- inla.posterior.sample(run, model, seed = inla.seed ,selection=list(x3=1, x11=1, x15=1, # initialising the coefficients
                                                                                 x29=1, x30=1, x31=1,
                                                                                 x32=1, x35=1, x36=1,
                                                                                 x39=1, x45=1, x46=1,
                                                                                 x48=1, x51=1, x52=1),num.threads="1:1")
   
-  sfield_nodes_mean <- model$summary.random$spatial.field['mean']
+  
+  sfield_nodes_mean <- model$summary.random$spatial.field['mean'] # extract the spatial random effect of the model
   field_mean <- (Aprediction%*% as.data.frame(sfield_nodes_mean)[, 1])
   for(i in 1:run)
   {
-    #fixedeff[,i] <- model$summary.fixed['Intercept', 'mean'] +
+    
     fixedeff[,i] <-  
-      #m1.samp[[i]]$latent[1,] +
-      model$summary.fixed['Intercept', 'mean'] +
+      model$summary.fixed['Intercept', 'mean'] + # allow a fixed intercept (this can also vary)
       m1.samp[[i]]$latent[1,] * dat[,'x3'] +
       m1.samp[[i]]$latent[2,] * dat[,'x11'] +
       m1.samp[[i]]$latent[3,] * dat[,'x15'] +
@@ -586,25 +457,28 @@ simPops_gg <- function(model, dat, Aprediction, run)
       m1.samp[[i]]$latent[13,] * dat[,'x48'] +
       m1.samp[[i]]$latent[14,] * dat[,'x51'] +
       m1.samp[[i]]$latent[15,] * dat[,'x52'] +
-      model$summary.random$IDsp['mean'][,1] +
-      dat$set_re +
-      #rnorm(nrow(dat), 0, 1/m1.samp[[i]]$hyperpar[4]) + 
-      field_mean[,1]
+      
+      
+      model$summary.random$IDsp['mean'][,1] + # iid random effect
+      dat$set_re + # settlement type random effect
+      
+      field_mean[,1] # spatial random effect
     
-    dens_hat[,i]<- exp(fixedeff[,i])
-    pop_hat[,i] <- dens_hat[,i]*dat$BLD
+    dens_hat[,i]<- exp(fixedeff[,i]) # predicted population density
+    pop_hat[,i] <- dens_hat[,i]*dat$BLD # predicted population count
   }
   
-  #mean_pop_hat1 <- dat$pop_hat1 #
-  mean_dens_hat <- apply(dens_hat, 1, mean, na.rm=T) #
-  mean_pop_hat <- apply(pop_hat, 1, mean, na.rm=T) #
-  median_pop_hat <- apply(pop_hat, 1, quantile, probs=c(0.5), na.rm=T) #
-  lower_pop_hat <- apply(pop_hat, 1, quantile, probs=c(0.025), na.rm=T) #
-  upper_pop_hat <- apply(pop_hat, 1, quantile, probs=c(0.975), na.rm=T) #
-  sd_pop_hat <- apply(pop_hat, 1, sd, na.rm=T) #
-  uncert_pop_hat <- (upper_pop_hat - lower_pop_hat)/mean_pop_hat#
+  # Obtain posterior inference
+  mean_dens_hat <- apply(dens_hat, 1, mean, na.rm=T) # mean density
+  mean_pop_hat <- apply(pop_hat, 1, mean, na.rm=T) # mean population count 
+  median_pop_hat <- apply(pop_hat, 1, quantile, probs=c(0.5), na.rm=T) # median population count 
+  lower_pop_hat <- apply(pop_hat, 1, quantile, probs=c(0.025), na.rm=T) # lower bound of population count (95% credible interval)
+  upper_pop_hat <- apply(pop_hat, 1, quantile, probs=c(0.975), na.rm=T) # upper bound of population count (95% credible interval)
+  sd_pop_hat <- apply(pop_hat, 1, sd, na.rm=T) # standard deviation of population count (95% credible interval)
+  uncert_pop_hat <- (upper_pop_hat - lower_pop_hat)/mean_pop_hat# explicit estimates of uncertainties of estimated population counts 
   
   
+  # add to the dataset
   dat$mean_dens_hat <- mean_dens_hat
   dat$mean_pop_hat <- mean_pop_hat
   dat$median_pop_hat <- median_pop_hat
@@ -614,54 +488,94 @@ simPops_gg <- function(model, dat, Aprediction, run)
   dat$sd_pop_hat <- sd_pop_hat
   
   
-  
-  output <- list(pop_hat = pop_hat,
+  # save output as a list
+  output <- list(pop_hat = pop_hat, # this is an nrow(dat) by run dimension matrix of posterior samples
                  est_data = dat)
   
 }
 
-#rm(dat.sim, sim.pops_nb, sim.pops, llg.est, prov.est2)
-run=2000
-#run=100
-system.time(str(sim.pops_gg <- simPops_gg(mod1a,datt, A, run)))  # TSBHM
-system.time(str(sim.pops_gg2 <- simPops_gg(mod1b,datt4, A, run))) # BHM
+run=2000 # number of iterations 
+system.time(str(sim.bhm <- simPops_gg(mod_bhm,datt_bhm, A, run)))  # BHM - takes approximately 6 minutes 
 
+system.time(str(sim.tsbhm <- simPops_gg(mod_tsbhm,datt, A, run))) # TSBHM- takes approximately 6 minutes 
 
-# Visualise the posterior samples 
+#2065842720;1128763477
+# Visualise the traceplots of the posterior samples 
 # Load ggplot2
 library(ggplot2)
 
-##-----Traceplots 
+##-----Posterior samples traceplots of 6 randomly selected census units
 samp <- sample(nrow(datt), 6)
 par(mfrow=c(3,2), mar=c(5,5,2,1))
 for(j in samp)
 {
-  plot.ts(sim.pops_gg$pop_hat[j,], ylab = "pop_hat", col="steel blue",
+  plot.ts(sim.tsbhm$pop_hat[j,], ylab = "pop_hat", col="steel blue",
           cex.main=2,  main=paste0("Pop_hat samples for CU ", datt$CU_Name[j], sep=""))
-  abline(h=mean(sim.pops_gg$pop_hat[j,]), lwd=2, col=2)
+  abline(h=mean(sim.tsbhm$pop_hat[j,]), lwd=2, col=2)
 }
 
+
+
+#------------------------------------------------------------
+###---CU level estimates
+#----------------------------------------------------------
+
+# check national totals
+sum(sim.bhm$est_data$mean_pop_hat, na.rm=T)    # bhm
+sum(sim.tsbhm$est_data$mean_pop_hat, na.rm=T)  # tsbhm
+
+# Exract CU level posterior estimates as data frames with other variables
+cu.tsbhm <- sim.tsbhm$est_data # TSBHM 
+cu.bhm <- sim.bhm$est_data # BHM 
+
+#-----------------------------------
+#   Calculate  Relative Error rate 
+#-------------------------------
+# ----TSBHM
+predicted.total.tsbhm <- sum(cu.tsbhm$mean_pop_hat[!is.na(cu.tsbhm$POPN)], na.rm=T) # predicted total
+observed.total <- sum(cu.tsbhm$POPN,na.rm=T) # observed total 
+
+# error rate
+erate.tsbhm <- abs(predicted.total.tsbhm-observed.total)/observed.total
+
+
+# ---- BHM
+predicted.total.bhm <- sum(cu.bhm$mean_pop_hat[!is.na(cu.bhm$POPN)], na.rm=T) # predicted 
+observed.total <- sum(cu.bhm$POPN,na.rm=T)
+
+# error rate
+erate.bhm <- abs(predicted.total.bhm-observed.total)/observed.total
+
+
+# --- relative error rate
+rerate <- erate.tsbhm/erate.bhm
+
+## --- reduction in relative error rate (%)
+(1-rerate)*100 # ~32%
+#-------------------------------------------------------------------------------------------------
 
 
 #####----Join the posterior draws to the dataframe------------------------------------------------------
 dim(datt)
 names(datt)
-data.all <- datt[,c("Prov_Name" ,"Dist_Name", "LLG_Name", "Ward_Name")]
+data.all <- datt[,c("Prov_Name" ,"Dist_Name", "LLG_Name")]
 
 # TSBHM
-data.all1a <- data.frame(cbind(data.all, sim.pops_gg$pop_hat))#---Contains all the simulated posterior matrix
-dim(data.all1a);names(data.all1a)
+data.tsbhm <- data.frame(cbind(data.all, sim.tsbhm$pop_hat))#---Contains all the simulated posterior matrix
+dim(data.tsbhm);names(data.tsbhm)
 
 
 # BHM
-data.all1b<- data.frame(cbind(data.all, sim.pops_gg2$pop_hat))#---Contains all the simulated posterior matrix
-dim(data.all1b);names(data.all1b)
+data.bhm<- data.frame(cbind(data.all, sim.bhm$pop_hat))#---Contains all the simulated posterior matrix
+dim(data.bhm);names(data.bhm)
 
 
-####-----------ADMIN TOTALS AND UNCERTAINTIES----------------------------------------
-thin=1 #----Thinning choses every 5th sample for posterior inference 
-thinn <- 4+(1:run)#--There is a burnin period of the first 20% of the total sample
+#-----------------------------------------------------------------------------
+#   Obtain Admin totals with uncertainties
+#----------------------------------------------------------------------------
 
+thin=5 #----Thinning choses every 5th sample for posterior inference 
+thinn <- seq((4+0.2*run),run, by=thin) #--There is a burnin period of the first 20% of the total sample
 
 #----NATIONAL------------------------------
 nat_total <- function(dat, thinn)
@@ -677,17 +591,19 @@ nat_total <- function(dat, thinn)
   tot_median <- quantile(tots, probs=c(0.5))
   tot_upper <- quantile(tots, probs=c(0.975))
   
-  return(estimates <- data.frame(estimates=unlist(list(total=tot_mean, lower=tot_lower, median=tot_median, upper=tot_upper))))
+  return(estimates <- data.frame(estimates=unlist(list(total=tot_mean, 
+                                                       lower=tot_lower, 
+                                                       median=tot_median, 
+                                                       upper=tot_upper))))
 }
-(national1 <- nat_total(data.all1a, thinn)) # TSBHM
-(national2<- nat_total(data.all1b, thinn)) # BHM
+(national.tsbhm <- nat_total(data.tsbhm, thinn)) # TSBHM
+#(national.bhm<- nat_total(data.bhm, thinn)) # BHM
 
 
 
-write.csv(national1, file=paste0(results_path, "/updated2/National_estimates_main_gamma-gaussian.csv"))
+#write.csv(national1, file=paste0(results_path, "/updated2/National_estimates_main_gamma-gaussian.csv"))
 
-
-###########
+#  Province total and uncertainties
 prov_est_gg <- function(datp, thinn)
 {
   provnames <- unique(datp$Prov_Name)
@@ -714,13 +630,9 @@ prov_est_gg <- function(datp, thinn)
                                 #median = outP[,3],
                                 upper = outP[,3]))
 }
-#(prov.est_gg <- prov_est_gg(data.all,thinn))
 
-prov1 <- prov_est_gg(data.all1a,thinn) # TSBHM
-prov2<- prov_est_gg(data.all1b,thinn) # BHM
-write.csv(prov1, file=paste0(res_path, "/Province_data_TSBHM.csv"), row.names=F)
-write.csv(prov2, file=paste0(res_path, "/Province_data_BHM.csv"), row.names=F)
-
+prov.tsbhm <- prov_est_gg(data.tsbhm,thinn) # TSBHM
+prov.bhm <- prov_est_gg(data.bhm,thinn) 
 
 #------------------------------------------------------------
 ###---District level estimates 
@@ -751,12 +663,9 @@ dist_est_gg <- function(datd, thinn)
                                 upper = outd[,3]))
 }
 
-(dist1 <- dist_est_gg(data.all1a,thinn)) # TSBHM
-(dist2<- dist_est_gg(data.all1b,thinn)) # BHM
-write.csv(dist1, file=paste0(res_path, "/District_data_TSBHM.csv"), row.names=F)
-write.csv(dist2, file=paste0(res_path, "/District_data_BHM.csv"), row.names=F)
+(dist1 <- dist_est_gg(data.tsbhm,thinn)) # TSBHM
 
-
+#write.csv(dist1, file=paste0(res_path, "/District_data_TSBHM.csv"), row.names=F)
 #------------------------------------------------------------
 ###---LLG level estimates 
 #----------------------------------------------------------
@@ -785,508 +694,131 @@ llg_est_gg <- function(datl, thinn)
                                upper = outl[,3]))
 }
 
-llg1 <- llg_est_gg(data.all1a,  thinn) # TSBHM 
-llg2<- llg_est_gg(data.all1b,  thinn) # BHM 
+llg1 <- llg_est_gg(data.tsbhm,  thinn) # TSBHM 
 
 
-write.csv(llg1, file=paste0(res_path, "/LLG_data_TSBHM.csv"), row.names=F)
-write.csv(llg2, file=paste0(res_path, "/LLG_data_BHM.csv"), row.names=F)
+library(ggpubr)
 
-
-### --- Ward level estimates with uncertainties 
-wd_est_gg <- function(datl, thinn)
-{
-  lnames <- unique(datl$Ward_Name)
-  outl <- matrix(0, nrow=length(lnames), ncol=3)
-  
-  for(j in 1:length(lnames))
-  {
-    wd <- datl[datl$Ward_Name==lnames[j],]
-    ltots <- apply(wd[,thinn], 2, sum, na.rm=T)
-    ltots_sd <- sd(ltots, na.rm=T)
-    
-    ltot_mean1  <- mean(ltots, na.rm=T)
-    ltot_lower <- quantile(ltots, probs=c(0.025))
-    ltot_upper <- quantile(ltots, probs=c(0.975))
-    
-    lestimates <- round(c(ltot_mean1, ltot_lower, ltot_upper), 3)
-    outl[j,] <- lestimates
-  }
-  outl <- data.frame(outl)
-  return(wd_est <- data.frame(names = lnames,
-                               total = outl[,1],
-                               lower = outl[,2],
-                               upper = outl[,3]))
-}
-
-wd1 <- wd_est_gg(data.all1a,  thinn) # TSBHM 
-wd2<- wd_est_gg(data.all1b,  thinn) # BHM 
-
-
-write.csv(wd1, file=paste0(res_path, "/Ward_data_TSBHM.csv"), row.names=F)
-write.csv(wd2, file=paste0(res_path, "/Ward_data_BHM.csv"), row.names=F)
-
-#------------------------------------------------------------
-###---CU level estimates
-#----------------------------------------------------------
-cu1 <- sim.pops_gg$est_data # TSBHM 
-cu2 <- sim.pops_gg2$est_data # BHM 
-
-write.csv(cu1, file=paste0(res_path, "/cu_data_TSBHM.csv"), row.names=F)
-write.csv(cu2, file=paste0(res_path, "/cu_data_BHM.csv"), row.names=F)
-
-
-#------------------------------------------
-# Extract psoterior data for each appraoch
+##
 var2Add <- c("Prov_Name", "Dist_Name", "LLG_Name", "Ward_Name", "CU_Name", "POPN", "BLDG21", "bld_pred",
              "set_typ", "mean_dens_hat", "mean_pop_hat", "lower_pop_hat", "upper_pop_hat", "uncert_pop_hat")
 
+# scatter and 2d plots
+## TSBHM 
+
+
 # TSBHM
-dim(dat_tsbhm <- cu1) 
+dim(dat_tsbhm <- cu.tsbhm) 
 dat_tsbhm$method <- rep("TSBHM", nrow(dat_tsbhm))
 dat_tsbhm$ldens <- log(dat_tsbhm$mean_dens_hat) # log posterior pop density
 
 
 # BHM
-dim(dat_bhm <-cu2) 
+dim(dat_bhm <-cu.bhm) 
 dat_bhm$method <- rep("BHM", nrow(dat_bhm))
 dat_bhm$ldens <- log(dat_bhm$mean_dens_hat)  # log posterior pop density
 
 
-# Combined data
-
-dim(dat_all <- rbind(dat_tsbhm, dat_bhm))
-
-#--density plot
-pd <- ggdensity(dat_all, x = "ldens",
-                add = "mean", rug = TRUE,
-                color = "method", fill = "method"#,
-                #palette = c("#00AFBB", "#E7B800")
-) 
-pd
-
-pdens <- ggpar(pd, xlab="Log of Predicted Population Density", ylab="Density",
-               legend = "top", legend.title = "Method",size=22,
-               font.legend=c(18),
-               palette = "jco",
-               font.label = list(size = 15, face = "bold", color ="red"),
-               font.x = c(16),
-               font.y = c(16),
-               xtickslab.rt = 45, 
-               ytickslab.rt = 45)
-pdens
-
-##---Histogram plots
-
-gh <- gghistogram(dat_all, x = "ldens",
-                  add = "mean", rug = TRUE,
-                  size=2,
-                  color = "method", fill = "method", bins=50#,
-                  # palette = c("#00AFBB", "#E7B800")
-) 
-
-phdens <- ggpar(gh, xlab="Log of Predicted Population Density", ylab="Count",
-                legend = "top", legend.title = "Method",size=22,
-                font.legend=c(20),
-                palette = c("jco"),
-                #[1] "#FF0000" "#FF1C00" "#FF3800" "#FF5500" "#FF7100" "#FF8D00" "#FFAA00", "#E5F5F9","#99D8C9" 
-                #[8] "#FFC600" "#FFE200" "#FFFF00"
-                #"#E5F5F9" "#99D8C9" "#FFE200"
-                #colour = "bld_cover",
-                #shape= "bld_cover",
-                yscale = c("none"),
-                font.label = list(size = 18, face = "bold", color ="red"),
-                font.x = c(22),
-                font.y = c(20),
-                font.main=c(14),
-                font.xtickslab =c(18),
-                font.ytickslab =c(20),
-               # ylim= c(0, max(p100m$pop)),
-                xtickslab.rt = 45, ytickslab.rt = 45)
-phdens
-
-
-###Scatter plots: CU-level
-names(dat_all)
-dat_all$method <- factor(dat_all$method)
-pphat <- dat_all %>%
-  ggplot(aes(x=POPN, y=mean_pop_hat))+
-  # geom_point(aes(colour=method))+
-  geom_pointrange(aes(ymin = lower_pop_hat, ymax = upper_pop_hat, colour=method), size=0.5)+
-  #geom_errorbar(aes(ymin = lower_pop_hat, ymax = upper_pop_hat, colour=method), size=1,width = 0.5)+
-  geom_smooth(aes(colour=method),method="lm", se=F)+
+#-----------------------------------------------------------------------------
+###  FIGURE 5 (MAIN MANUSCRIPT)
+#----------------------------------------------------------------------------------
+plot_cu1 <- ggplot(cu.tsbhm, aes(POPN, mean_pop_hat)) +
+  geom_pointrange(aes(ymin = lower_pop_hat, ymax = upper_pop_hat), size=0.5)+
+  # geom_errorbar(aes(ymin = lower, ymax = upper), size=1,width = 0.5, colour='dark grey')+
+  geom_line(size=1, colour='red') +
   theme_bw()+
+  #facet_wrap(~method, scales="free", nrow=1)+
   theme(strip.text = element_text(size = 15),
         axis.text.x=element_text(size=15),
         axis.text.y=element_text(size=15),
         legend.title=element_text(size=15),
-        legend.text=element_text(size=14),
-        #panel.border = element_blank(), 
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(), 
-        axis.line = element_line(colour = "black"))+
-  facet_wrap(~method)
-pphat
-pv <- ggpar(pphat, xlab="Observed population(count)", ylab="Predicted population(count)",
-            legend = "top", legend.title = "Method",
-            palette = "jco",
-            font.label = list(size = 15, face = "bold", color ="red"),
-            font.x = c(16),
-            font.y = c(16),
-            xtickslab.rt = 45, 
-            ylim= c(0, max(dat_all$POPN, na.rm=T)),
-            ytickslab.rt = 45)
+        legend.text=element_text(size=14))#+
 
-pv
+plot_cu1<- ggpar(plot_cu1, ylab="Predicted Population", xlab="Observed Population",
+                 legend = "right", legend.title=element_text("Density",size=22) ,
+                 font.legend=c(20),
+                 font.label = list(size = 20, face = "bold", color ="red"),
+                 font.x = c(20),
+                 font.y = c(20),
+                 font.main=c(16),
+                 font.xtickslab =c(20),
+                 font.ytickslab =c(20),
+                 #xticks.by = TRUE,
+                 #xlim= c(0, max(df2$x)),
+                 xtickslab.rt = 45, ytickslab.rt = 45)
 
+plot_cu1
+#''''''
 
 
-
-# install.packages("remotes")
-#remotes::install_github("R-CoderDotCom/ridgeline@main")
-
-#library(ridgeline)
-
-#ridgeline(chickwts$weight, chickwts$feed)
-
-#library(ridgeline)
-
-##
-
-## Calculate  Error rates 
-# TSBHM
-dim(cu1b <- cu1 %>% drop_na(POPN)) 
-predTot1 <- sum(cu1b$mean_pop_hat, na.rm=T)
-trueTot1 <- sum(cu1b$POPN,na.rm=T)
-#bb1 <- sum(cu1b$mean_pop_hat-cu1b$POPN,na.rm=T)/nrow(cu1)
-bias1b <- abs(predTot1-trueTot1)/trueTot1
-
-
-# BHM
-dim(cu2b <- cu2 %>% drop_na(POPN)) 
-predTot2 <- sum(cu2b$mean_pop_hat, na.rm=T)
-trueTot2 <- sum(cu2b$POPN,na.rm=T)
-#bb2 <- sum(cu2b$mean_pop_hat-cu2b$POPN,na.rm=T)/nrow(cu2)
-bias2b <- abs(predTot2-trueTot2)/trueTot2
-
-## Calculate  relative error rates
-(rbiasb <- (bias1b/bias2b))  
-#(rbiasb2 <- (bb1/bb2)) 
-## Calculate percentage reduction in error rates
-(1-rbiasb)*100
-hist(log(cu2$POPN-cu2$mean_dens_hat))
-
-
-
-require(ggplot2)
-ggplot(cu1, aes(x="mean_pop_hat"))+
-geom_boxplot()
-
-sum(cu.est$mean, na.rm=T)
-Vars2Include <- c("CLUSTER_ID", "Uniq_ID", "Prov_Name" ,"Dist_Name", "LLG_Name", "Ward_Name",
-                  "CU_Name", "TYPE", "lon", "lat", "SOURCE", "POPN", "BLDG21", "mean", "median",
-                  "lower", "upper", "uncertainty", "mean_dens_hat")
-names(cu1)
-dim(cu.data1 <- cu1[,Vars2Include]); head(cu1)
-cu.data1$method <- rep("TSBHM", nrow(cu.data1))
-dim(cu.data2 <- cu2[,Vars2Include]); head(cu2)
-cu.data2$method <- rep("BHM", nrow(cu.data2))
-
-
-dim(cu_dat <- rbind(cu.data1,cu.data2))
-
-## ward summary
-(wd.data1 <- cu.data1 %>% group_by(Ward_Name) %>%
-  summarise(mean = sum(mean, na.rm=T),
-            pop = sum(POPN, na.rm=T)))
-wd.data1$method <- rep("TSBHM", nrow(wd.data1))
-
-
-## lga summary
-(lg.data1 <- cu.data1 %>% group_by(LLG_Name) %>%
-    summarise(mean = sum(mean, na.rm=T),
-              pop = sum(POPN, na.rm=T)))
-lg.data1$method <- rep("TSBHM", nrow(lg.data1))
-
-
-
-##  district summary
-(dst.data1 <- cu.data1 %>% group_by(Dist_Name) %>%
-    summarise(mean = sum(mean, na.rm=T),
-              pop = sum(POPN, na.rm=T)))
+##  district summary-----------------
+(dst.data1 <- cu.tsbhm %>% group_by(Dist_Name) %>%
+   summarise(mean = sum(mean_pop_hat, na.rm=T),
+             pop = sum(POPN, na.rm=T)))
 dst.data1$method <- rep("TSBHM", nrow(dst.data1))
 
+##########
+
+dstt <- cu.tsbhm %>% group_by(Dist_Name)%>% drop_na(mean_pop_hat) %>%
+  summarise(Obs = sum(POPN, na.rm=T),
+            Pred = round(sum(mean_pop_hat, na.rm=T)))
+
+cup1 <-ggplot(data=dstt,aes(Obs,Pred)) + # swapped 
+  stat_density2d(aes(fill=..level..,alpha=..level..),geom='polygon',colour='black',
+                 contour_var = "ndensity") + 
+  scale_fill_continuous(type="viridis") +
+  geom_smooth(method=lm,linetype=2,colour="red",se=F) + 
+  scale_y_continuous(breaks=seq(0, max(dstt$Obs),50000))+
+  guides(alpha="none") +
+  geom_point() + commonTheme
+
+plot_dst1<- ggpar(cup1, xlab="Observed Population", ylab="Predicted Population",
+                  legend = "right", legend.title=element_text("Density",size=22) ,
+                  font.legend=c(20),
+                  legend.show=F,
+                  font.label = list(size = 20, face = "bold", color ="red"),
+                  font.x = c(20),
+                  font.y = c(20),
+                  font.main=c(16),
+                  font.xtickslab =c(20),
+                  font.ytickslab =c(20),
+                  #xticks.by = TRUE,
+                  xlim= c(0, max(dstt$Obs)),
+                  xtickslab.rt = 45, ytickslab.rt = 45)
+
+plot_dst1
 
 
-##  province summary
-(prv.data1 <- cu.data1 %>% group_by(Prov_Name) %>%
-    summarise(mean = sum(mean, na.rm=T),
-              pop = sum(POPN, na.rm=T)))
-prv.data1$method <- rep("TSBHM", nrow(prv.data1))
+ggarrange(plot_cu1, plot_dst1+ rremove("x.text"), 
+          labels = c("(A)", "(B)"),
+          nrow=2)
 
 
-
-
-
-####
-##
-ppt <- "//worldpop.files.soton.ac.uk/Worldpop/Projects/WP000008_UNFPA_PNG/Working/Amy/PNG_report/FINAL_models_310123/Shapefiles/gamma_gaussian"
-##
-shpp <- st_read(paste0(ppt, "/gamma_gaussian_CU.shp"))
-names(shpp)
-plot(shpp["AREA_KM2"])
-names(shp.cu)
-
-plot(shp.cu["obs"])
-
-library(tmap)
-library(tmaptools)
-
-tmap_options(check.and.fix = TRUE)
-tmap_mode(mode = "plot")
-
-#require(rgdal)
-crs.UTM = CRS("+proj=utm +zone=55 +datum=WGS84 +units=m +no_defs")#png is zone 55
-shpcu_UTM2 = st_transform(shp.cu, crs.UTM)
-#--Observed counts
-
-
-##--predicted based on best fit gg model
-pred1 <-  tm_shape(shpcu_UTM2)+ 
-  tm_polygons(col="pop_hat1", title="Predicted Count",
-              legend.hist=F, 
-              palette=viridis(100), 
-              legend.show =T,
-              breaks=c(1,100,300,600, 1000,3000, 7000, 12000)
-              )+
-  tm_borders(col="white")+
-  tm_layout(legend.outside = F, legend.text.size=1.5, legend.title.size=2)+
-  tm_compass(position = c("right", "bottom"), text.size=1.5)+
-  tm_scale_bar(position = c("left", "bottom"), text.size=1, size=1, breaks=c(0, 200, 400, 600))+
-  tm_layout(main.title = "", frame=FALSE) 
+#----------------------------------------------------------------------------------------------
+#             FIGRE U -----------------------------------------------------------------------
+# barplots
+prov1$method <- rep("TSBHS", nrow(prov1))
+prov2$method <- rep("BHS", nrow(prov2))
 
 
 
-pred2 <-  tm_shape(shpcu_UTM2)+ 
-  tm_polygons(col="pred2", title="Predicted Count",
-              legend.hist=F, 
-              palette="plasma", 
-              legend.show =F,
-              breaks=c(1,100,300,600, 1000,3000, 7000, 12000)
-  )+
-  tm_layout(legend.outside = F, legend.text.size=1.5, legend.title.size=2)+
-  #tm_compass(position = c("right", "bottom"), text.size=1.5)+
-  #tm_scale_bar(position = c("left", "bottom"), text.size=1, size=1, breaks=c(0, 200, 400, 600))+
-  tm_layout(main.title = "", frame=FALSE) 
+prv_dat <- bind_rows(prov1, prov2)
+pcp <- ggplot(prv_dat, aes(x=names, y=total, group=method, fill=method)) +
+  #geom_line(linetype="dashed") +
+  geom_bar(aes(group=method), alpha=0.5, stat="identity") +
+  geom_pointrange( aes(ymin=lower, ymax=upper, color=method), alpha=0.9, size=0.8)+
+  scale_fill_manual(values=c("steel blue", "light blue"))
 
-
-##--predicted based on best fit gg model
-uncert1 <-  tm_shape(shpcu_UTM2)+ 
-  tm_polygons(col="Uncertaint", title="Uncertainty",
-              legend.hist=F, 
-              palette=viridis(100), 
-              legend.show = T,
-              breaks=c(0,0.1,0.2, 0.3,0.4,0.5,0.6,1.2,2.5,4))+
-  tm_borders(col="white")+
-  tm_layout(legend.outside = F, legend.text.size=1.5, legend.title.size=2)+
-  #tm_compass(position = c("right", "bottom"), text.size=1.5)+
-  #tm_scale_bar(position = c("left", "bottom"), text.size=1.5, size=1.5, breaks=c(0, 200, 400, 600))+
-  tm_layout(main.title = "", frame=FALSE) 
-
-
-
-
-class(cu_dat$method <- factor(cu_dat$method))
-table(cu_dat$method)
-
-# Scatter plots (sp) with regression linem
-library(ggpubr)
-pc <- ggscatter(cu_dat, x = "POPN", y = "mean",
-                add = "reg.line",               # Add regression line
-                conf.int = TRUE,                # Add confidence interval
-                color = "method", palette = "jco", # Color by groups "cyl"
-                #shape = "Method",                   # Change point shape by groups "cyl"
-                facet.by ="method"
-)
-
-pcb <- ggpar(pc, xlab="Observed Population", ylab="Predicted Population",
-             legend = "right", legend.title = "Area Categories",
-             font.label = list(size = 15, face = "bold", color ="red, blue"),
-             font.x = c(16),
-             font.y = c(16),
-             #xlim=c(0,10000),
-             xtickslab.rt = 45, ytickslab.rt = 45)
-
-pcb
-
-
-
-
-# CU level scatter plots 
-
-pc <- ggplot(cu_dat, aes(POPN, mean, colour=method)) +
-#geom_pointrange(aes(ymin = lower, ymax = upper))+
-  #geom_smooth(method="lm")+
-  geom_linerange(aes(ymin = lower, ymax = upper), size=1) +
-  geom_pointrange(aes(ymin = lower, ymax = upper), size=0.5)+
-  geom_errorbar(aes(ymin = lower, ymax = upper), size=1,width = 0.5)+
-  geom_line(aes(group = method), size=1) +
- theme_bw()+
-  #facet_wrap(~method, scales="free", nrow=1)+
-  theme(strip.text = element_text(size = 15),
-        axis.text.x=element_text(size=15),
-        axis.text.y=element_text(size=15),
-        legend.title=element_text(size=15),
-        legend.text=element_text(size=14))#+
-  #scale_fill_manual(values=c("#00AFBB", "#E7B800"))
-  
-
-pcb <- ggpar(pc, xlab="Observed Population", ylab="Predicted Population",
-             legend = "right", legend.title=element_text("Method",size=22),
-             font.legend=c(18),
-             palette = c("#0D0887FF", "#00AFBB"),
-             font.label = list(size = 18, face = "bold", color ="red"),
-             font.x = c(22),
-             font.y = c(18),
-             font.main=c(14),
-             font.xtickslab =c(18),
-             font.ytickslab =c(16),
-             ylim=c(0, 13000),
-             xtickslab.rt = 45, ytickslab.rt = 45)
-
-pcb
-
-
-#####
-cu_dat$logdens <- log(cu_dat$mean_dens_hat)
-gh <- gghistogram(cu_dat, x = "logdens",
-                  add = "mean", rug = TRUE,
-                  color = "method", fill = "method", bins=50) 
-
-ph <- ggpar(gh, xlab="Log of Predicted Population Density", ylab="Count",
-            legend = "right", legend.title=element_text("Method",size=22),
-            font.legend=c(18),
-            palette = c("#0D0887FF", "#00AFBB"),
-            font.label = list(size = 18, face = "bold", color ="red"),
-            font.x = c(22),
-            font.y = c(18),
-            font.main=c(14),
-            font.xtickslab =c(18),
-            font.ytickslab =c(16),
-            #ylim=c(0, 13000),
-            xtickslab.rt = 45, ytickslab.rt = 45)
-ph
-
-
-# CU level scatter plots 
-
-pc <- ggplot(cu_dat, aes(POPN, mean, colour=method)) +
-  #geom_pointrange(aes(ymin = lower, ymax = upper))+
-  #geom_smooth(method="lm")+
-  geom_linerange(aes(ymin = lower, ymax = upper), size=1) +
-  geom_pointrange(aes(ymin = lower, ymax = upper), size=0.5)+
-  geom_errorbar(aes(ymin = lower, ymax = upper), size=1,width = 0.5)+
-  geom_line(aes(group = method), size=1) +
-  theme_bw()+
-  #facet_wrap(~method, scales="free", nrow=1)+
-  theme(strip.text = element_text(size = 15),
-        axis.text.x=element_text(size=15),
-        axis.text.y=element_text(size=15),
-        legend.title=element_text(size=15),
-        legend.text=element_text(size=14))#+
-
-
-
-
-
-#######
-
-####
-
-# Basic plot
-# +++++++++++++++++++++++++++
-
-cu <- ggscatter(cu.data1, x = "POPN", y = "mean",
-                color = "black", shape = 16, size = 2, # Points color, shape and size
-                add = "reg.line",  # Add regressin line
-                #ellipse = TRUE,
-                add.params = list(color = "red", fill = "light green"), # Customize reg. line
-                conf.int = TRUE, # Add confidence interval
-                cor.coef = TRUE, # Add correlation coefficient. see ?stat_cor
-                cor.coeff.args = list(method = "pearson", label.x = 3, label.sep = "\n")
-)
-
-cu11 <- ggpar(cu, xlab="Observed population count", ylab="Predicted population count",
-              legend = "right", legend.title=element_text("Method",size=22),
-              font.legend=c(18),
-              palette = c("#0D0887FF"),
+pdcp <- ggpar(pcp, ylab="Predicted Total Population", xlab="Province",
+              legend = "right", legend.title = "Method",
               font.label = list(size = 18, face = "bold", color ="red"),
-              font.x = c(22),
-              font.y = c(18),
-              font.main=c(14),
-              font.xtickslab =c(18),
-              font.ytickslab =c(16),
-              #ylim=c(0, 13000),
+              font.x = c(16),
+              font.y = c(16),
               xtickslab.rt = 45, ytickslab.rt = 45)
-cu11
 
+pdcp
 
-
-
-wd <- ggscatter(wd.data1, x = "pop", y = "total",
-                color = "black", shape = 16, size = 2, # Points color, shape and size
-                add = "reg.line",  # Add regressin line
-               # ellipse = TRUE,
-                add.params = list(color = "red", fill = "light green"), # Customize reg. line
-                conf.int = TRUE, # Add confidence interval
-                cor.coef = TRUE, # Add correlation coefficient. see ?stat_cor
-                cor.coeff.args = list(method = "pearson", label.x = 3, label.sep = "\n")
-)
-
-wd11 <- ggpar(wd, xlab="Observed population count", ylab="Predicted population count",
-              legend = "right", legend.title=element_text("Method",size=22),
-              font.legend=c(18),
-              palette = c("00AFBB"),
-              font.label = list(size = 18, face = "bold", color ="red"),
-              font.x = c(22),
-              font.y = c(18),
-              font.main=c(14),
-              font.xtickslab =c(18),
-              font.ytickslab =c(16),
-              #ylim=c(0, 13000),
-              xtickslab.rt = 45, ytickslab.rt = 45)
-wd11
-
-
-
-#FF3800"
-
-lg <- ggscatter(lg.data1, x = "pop", y = "mean",
-                color = "black", shape = 16, size = 2, # Points color, shape and size
-                add = "reg.line",  # Add regressin line
-                #ellipse = TRUE,
-                add.params = list(color = "red", fill = "light green"), # Customize reg. line
-                conf.int = TRUE, # Add confidence interval
-                cor.coef = TRUE, # Add correlation coefficient. see ?stat_cor
-                cor.coeff.args = list(method = "pearson", label.x = 3, label.sep = "\n")
-)
-lg11 <- ggpar(lg, xlab="Observed population count", ylab="Predicted population count",
-              legend = "right", legend.title=element_text("Method",size=22),
-              font.legend=c(18),
-              palette = c("black"),
-              font.label = list(size = 18, face = "bold", color ="red"),
-              font.x = c(22),
-              font.y = c(18),
-              font.main=c(14),
-              font.xtickslab =c(18),
-              font.ytickslab =c(16),
-              #ylim=c(0, 13000),
-              xtickslab.rt = 45, ytickslab.rt = 45)
-lg11
-
-
-
-
+##------------------- MORE CSATTER PLOTS -----------------------------------------------
 dst <- ggscatter(dst.data1, x = "pop", y = "mean",
                  color = "black", shape = 16, size = 2, # Points color, shape and size
                  add = "reg.line",  # Add regressin line
@@ -1339,250 +871,11 @@ prv11 <- ggpar(prv, xlab="Observed population count", ylab="Predicted population
 prv11
 
 
-ggarrange(cu11, wd11, lg11, dst11, prv11, nrow=3, ncol=2)
 
-# install.packages("MASS")
-library(MASS)
+#################################################################################
+#####-------------------Cross validation
+####################################################################################
 
-
-cu.data1b <- cu.data1 %>% drop_na(POPN, mean)
-kern <- kde2d(cu.data1$POPN[!is.na(cu.data1$POPN)], cu.data1$mean[!is.na(cu.data1$POPN)])
-contour(kern, drawlabels = FALSE, nlevels = 6,
-        col = rev(heat.colors(6)), add = TRUE, lwd = 3)
-
-
-
-
-#---------------------------------------------------------------------------
-library(ggplot2)
-
-commonTheme = list(labs(color="Density",fill="Density",
-                        x="RNA-seq Expression",
-                        y="Microarray Expression"),
-                   theme_bw(),
-                   theme(legend.position=c(0,1),
-                         legend.justification=c(0,1)))
-
-names(prov1)
-prvd1 <- prov1 %>% select(c("total", "lower")) %>% drop_na()
-cud1 <- cud1[,c("Predicted", "Observed")]
-cud2 <- cu_sc_lng %>% filter(Method=="TSBHM") %>% drop_na()
-
-
-names(cu1)
-
-# Dist_Name
-# Prov_Name
-# Ward_Name 
-# CU_Name
-# LLG_Name
-lgdt <- cu1 %>% group_by(Dist_Name)%>% drop_na(mean) %>%
-  summarise(Obs = sum(POPN, na.rm=T),
-            Pred = round(sum(mean, na.rm=T)))
-
-
-lgdt <- cu2
-lgdt1 <- lgdt[,c("POPN", "mean")]
-#lgdt1 <- lgdt[,c("Obs", "Pred")]
-df1 = data.frame(lgdt1); colnames(df1) = c("x","y")
-
-commonTheme = list(labs(color="Density",fill="Density",
-                        x="Observed Population",
-                        y="Predicted Popualtion"),
-                   theme_bw(),
-                   theme(legend.position=c(0,1),
-                         legend.justification=c(0,1)))
-
-dens1 <- ggplot(data=lg.data1,aes(pop,mean)) + 
- stat_density2d(aes(fill=..level..,alpha=..level..),geom='polygon',colour='blue') + 
- # stat_density2d(geom='polygon',colour='blue') + 
-  #scale_fill_continuous(low="green",high="red") +
-  scale_fill_continuous(type = "viridis") +
-  geom_smooth(method=lm,linetype=2,colour="red",se=F) + 
-  guides(alpha="none") +
-  #scale_y_continuous(breaks=seq(0,max(df1$y, na.rm=T),50000))+
- # scale_x_continuous(breaks=seq(0,max(df1$x, na.rm=T),50000))+
-  
-  
- # scale_y_continuous(breaks=seq(0,max(df1$y, na.rm=T),50000))+
-  #scale_x_continuous(breaks=seq(0,max(df1$x, na.rm=T),50000))+
-  geom_point() + commonTheme
-
-
-####
-
-plot_dens2<- ggpar(dens1, ylab="Predicted Population", xlab="Observed Population",
-                 legend = "right", legend.title=element_text("Density",size=22) ,
-                 font.legend=c(20),
-                 legend.show=F,
-                 # legend.text=element_text(size=22),
-                 #main ="Lollipop plot of percentage relative  bias reduction by TSBHM",
-                 #palette = c("#00AFBB","blue", "red"),
-                 #[1] "#FF0000" "#FF1C00" "#FF3800" "#FF5500" "#FF7100" "#FF8D00" "#FFAA00", "#E5F5F9","#99D8C9" 
-                 #[8] "#FFC600" "#FFE200" "#FFFF00"
-                 #"#E5F5F9" "#99D8C9" "#FFE200"
-                 #colour = "bld_cover",
-                 #shape= "bld_cover",
-                 #scale_x_continuous(limits=c(0,100), breaks=c(20, 40,60, 80, 100)),
-                 font.label = list(size = 18, face = "bold", color ="red"),
-                 font.x = c(20),
-                 font.y = c(20),
-                 font.main=c(14),
-                 font.xtickslab =c(18),
-                 font.ytickslab =c(18),
-                 #xticks.by = TRUE,
-                 #ylim= c(0, max(p100m$pop)),
-                 xtickslab.rt = 80, ytickslab.rt = 45)
-
-plot_dens2
-
-
-
-# ---------------------------------------------------------------------------------
-## CU level density and scatter plots
-# Bin size control + color palette
-lgdt <- cu1 # TSBHM
-lgdt1 <- lgdt[,c("POPN", "mean")]
-#lgdt1 <- lgdt[,c("Obs", "Pred")]
-df1 = data.frame(lgdt1); colnames(df1) = c("x","y")
-
-cor(df1$x[!is.na(df1$x)], df1$y[!is.na(df1$x)])
-cup1 <- ggplot(df1, aes(x=x, y=y) ) + 
-  geom_bin2d(bins = 70) +
-  scale_fill_continuous(type = "viridis") +
-  #geom_point()+
-  geom_smooth(method=lm,linetype=2,colour="red",se=F) + 
-  theme_bw()
-
-plot_cup1<- ggpar(cup1, ylab="Predicted Population", xlab="Observed Population",
-                  legend = "right", legend.title=element_text("Count",size=22) ,
-                  font.legend=c(20),
-                  legend.show=F,
-                  font.label = list(size = 20, face = "bold", color ="red"),
-                  font.x = c(20),
-                  font.y = c(20),
-                  font.main=c(16),
-                  font.xtickslab =c(20),
-                  font.ytickslab =c(20),
-                  #xticks.by = TRUE,
-                  xlim= c(0, max(df1$x)),
-                   xtickslab.rt = 45, ytickslab.rt = 45)
-
-plot_cup1
-
-
-#### - BHM 
-lgdt2 <- cu2
-lgdt2 <- lgdt2[,c("POPN", "mean")]
-#lgdt1 <- lgdt[,c("Obs", "Pred")]
-df2 = data.frame(lgdt2); colnames(df2) = c("x","y")
-
-cup2 <- ggplot(df2, aes(x=x, y=y) ) +
-  geom_bin2d(bins = 70) +
-  scale_fill_continuous(type = "viridis") +
-  geom_point()+
-  geom_smooth(method=lm,linetype=2,colour="red",se=F) + 
-  theme_bw()
-
-plot_cup2<- ggpar(cup2, ylab="Predicted Population", xlab="Observed Population",
-                   legend = "right", legend.title=element_text("Count",size=22) ,
-                   font.legend=c(20),
-                   legend.show=F,
-                  font.label = list(size = 20, face = "bold", color ="red"),
-                  font.x = c(20),
-                  font.y = c(20),
-                  font.main=c(16),
-                  font.xtickslab =c(20),
-                  font.ytickslab =c(20),
-                  #xticks.by = TRUE,
-                  xlim= c(0, max(df1$x)),
-                   xtickslab.rt = 45, ytickslab.rt = 45)
-
-plot_cup2
-
-################################################
-# District 
-#### - BHM
-lgdt2 <- cu2 %>% group_by(Dist_Name)%>% drop_na(mean) %>%
-  summarise(Obs = sum(POPN, na.rm=T),
-            Pred = round(sum(mean, na.rm=T)))
-lgdt2 <- lgdt2[,c("Obs", "Pred")]
-df2 = data.frame(lgdt2); colnames(df2) = c("x","y")
-
-cup2 <-ggplot(data=df2,aes(x,y)) + 
-  stat_density2d(aes(fill=..level..,alpha=..level..),geom='polygon',colour='black') + 
-  scale_fill_continuous(type="viridis") +
-  geom_smooth(method=lm,linetype=2,colour="red",se=F) + 
-  scale_y_continuous(breaks=seq(0,max(df2$y, na.rm=T),50000))+
-  guides(alpha="none") +
-  geom_point() + commonTheme
-
-round(cor(df2$x,df2$y),2)
-
-plot_dst2<- ggpar(cup2, ylab="Predicted Population", xlab="Observed Population",
-                  legend = "right", legend.title=element_text("Density",size=22) ,
-                  font.legend=c(20),
-                  font.label = list(size = 20, face = "bold", color ="red"),
-                  font.x = c(20),
-                  font.y = c(20),
-                  font.main=c(16),
-                  font.xtickslab =c(20),
-                  font.ytickslab =c(20),
-                  #xticks.by = TRUE,
-                  xlim= c(0, max(df2$x)),
-                  xtickslab.rt = 45, ytickslab.rt = 45)
-
-plot_dst2
-
-## TSBHM 
-lgdt <- cu1 %>% group_by(Dist_Name)%>% drop_na(mean) %>%
-  summarise(Obs = sum(POPN, na.rm=T),
-            Pred = round(sum(mean, na.rm=T)))
-lgdt1 <- lgdt[,c("Obs", "Pred")]
-df1 = data.frame(lgdt1); colnames(df1) = c("x","y")
-cup1 <-ggplot(data=df1,aes(x,y)) + # swapped 
-  stat_density2d(aes(fill=..level..,alpha=..level..),geom='polygon',colour='black') + 
-  scale_fill_continuous(type="viridis") +
-  geom_smooth(method=lm,linetype=2,colour="red",se=F) + 
-  scale_y_continuous(breaks=seq(0, max(df1$y),50000))+
-  # scale_x_continuous(breaks=seq(0,max(df1$x, na.rm=T),50000))+
-  guides(alpha="none") +
-  geom_point() + commonTheme
-
-plot_dst1<- ggpar(cup1, xlab="Observed Population", ylab="Predicted Population",
-                  legend = "right", legend.title=element_text("Density",size=22) ,
-                  font.legend=c(20),
-                  legend.show=F,
-                  font.label = list(size = 20, face = "bold", color ="red"),
-                  font.x = c(20),
-                  font.y = c(20),
-                  font.main=c(16),
-                  font.xtickslab =c(20),
-                  font.ytickslab =c(20),
-                  #xticks.by = TRUE,
-                  xlim= c(0, max(df1$x)),
-                  xtickslab.rt = 45, ytickslab.rt = 45)
-
-plot_dst1
-
-cor(df1$x, df1$y)
-ggarrange(plot_cup1, plot_dst1+ rremove("x.text"), 
-          labels = c("(A)", "(B)"),
-          nrow=2)
-
-
-
-#------------------------------------------------------------------------------
-
-ggdensity(wdata, x = "weight",
-          add = "mean", rug = TRUE,
-          color = "sex", fill = "sex",
-          palette = c("#00AFBB", "#E7B800"))
-
-#---save
-#write.csv(cu.data, file=paste0(results_path, "/updated2/CU_data_with_estimates.csv"))
-
-###
 #----Extract settement type effects
 set_t <- function(dat, st)
 {
@@ -1601,202 +894,189 @@ set_t <- function(dat, st)
   dat$set_typ2
 }
 
+#------------------------------------------------
+
+# In-Sample 
+
+#-------------------------------------------------
+
+# #---------------------------------------------
+#   IN-SAMPLE CROSS VALIDATION
+# #-----------------------------------------
+
+# Summarise posterior estimates for cross-validation
+
+## bhm
+bhm_post <- data.frame(obs = cu.bhm$POPN, # observed count
+                       pred = cu.bhm$mean_pop_hat, # predicted count
+                       dens = cu.bhm$dens_bhm, # observed density
+                       densp = cu.bhm$mean_dens_hat) %>%# predicted population density
+drop_na() # remove all NAs
+
+## tsbhm
+tsbhm_post <- data.frame(obs = cu.tsbhm$POPN, # observed count
+                       pred = cu.tsbhm$mean_pop_hat, # predicted count
+                       dens = cu.tsbhm$dens_tsbhm, # observed density
+                       densp = cu.tsbhm$mean_dens_hat) %>%# predicted population density
+  drop_na() # remove all NAs
 
 
-#factor(sample(x = rep(1:5, each = floor(32090 / 5)),  # Sample IDs for training data
- #             size = 32090))
+### count
+(met11 <- mod_metrics2(bhm_post$obs, 
+                       bhm_post$pred)) #bhm
+
+(met22 <- mod_metrics2(tsbhm_post$obs, 
+                       tsbhm_post$pred)) #tsbhm
+
+(met_pop <- t(data.frame(bhm = unlist(met11),
+                         tsbhm = unlist(met22)))) # join
+
+### densities 
+(met11d <- mod_metrics2(bhm_post$dens, 
+                        bhm_post$densp)) # bhm
+
+(met12d <- mod_metrics2(tsbhm_post$dens, 
+                        tsbhm_post$densp))# tsbhm
+
+
+(met_dens <- t(data.frame(bhm = unlist(met11d),
+                         tsbhm = unlist(met12d)))) #join
+
+####----------------------------------------------------------------------------
+##
+#   OUT-OF-SAMPLE K-FOLD CROSS-VALIDATION 
 #
-#################################################################################
-#####-------------------Cross validation
-####################################################################################
+#--------------------------------------------------------
+set.seed(9444506) # set sampling seed                                    
 
-cross_val <- function(dat, mod, mesh, spde,
-                      A, shp, formula, k_folds)
+dat = datt
+k_folds = 5
+N <- nrow(dat)
+######
+ind_train <- factor(sample(x = rep(1:k_folds, each = floor(N/ k_folds)),  # Sample IDs for training data
+                           size = N, rep=T))
+
+table(as.numeric(ind_train)) 
+dat$k_fold <- as.numeric(ind_train)
+coords <- cbind(dat$lon, dat$lat)
+
+
+k_uniq <-sort(unique(dat$k_fold))
+#metrics_cv <- matrix(0, nrow=length(k_uniq), ncol=5)#5 metrics for each fold
+
+met_list_out <- list()
+for(i in 1:length(k_uniq))
 {
-  set.seed(9444506)                                     
-  N <- nrow(dat)
-  # (cv <- cross_val(datt, mod1c, fit11c, mesh, spde)
   
-  dat = datt
-  ######
-  ind_train <- factor(sample(x = rep(1:k_folds, each = floor(N/ k_folds)),  # Sample IDs for training data
-                             size = N, rep=T))
+  print(paste0("fold_", i, sep=""))
+  train_ind <- which(dat$k_fold!=k_uniq[i])
+  dim(train <- dat[train_ind, ])#---train set for fold i
+  dim(test <- dat[-train_ind, ]) #---test set for fold i
   
-  table(as.numeric(ind_train)) 
-  dat$k_fold <- as.numeric(ind_train)
-  coords <- cbind(dat$lon, dat$lat)
+  train_coords <- coords[train_ind,]
+  test_coords <- coords[-train_ind,]
   
   
-  k_uniq <-sort(unique(dat$k_fold))
-  metrics_cv <- matrix(0, nrow=length(k_uniq), ncol=5)#5 metrics for each fold
+  ###---Create projection matrices for training and testing datasets
+  Ae<-inla.spde.make.A(mesh=mesh,loc=as.matrix(train_coords));dim(Ae) #training
   
-  cvs <- list()
-  for(i in 1:length(k_uniq))
-  {
-    
-    print(paste0("fold_", i, sep=""))
-    train_ind <- which(dat$k_fold!=k_uniq[i])
-    dim(train <- dat[train_ind, ])#---train set for fold i
-    dim(test <- dat[-train_ind, ]) #---test set for fold i
-    
-    train_coords <- coords[train_ind,]
-    test_coords <- coords[-train_ind,]
-    
-    
-    ###---Create projection matrices for training and testing datasets
-    Ae<-inla.spde.make.A(mesh=mesh,loc=as.matrix(train_coords));dim(Ae) #training
-    
-    
-    
-    ########################
-    covars_train <- train[,c("x3","x11","x15","x29","x30", "x31","x32","x35", "x36",
-                             "x39","x45","x46","x48","x51","x52","set_prov", "set_typ", 
-                             "prov", "IDsp")]; dim(covars_train)
-    
-    #---Build the stack for the training set
-    stk_train <- inla.stack(data=list(y=train$dens2), #the response
-                            
-                            A=list(Ae,1),  #the A matrix; the 1 is included to make the list(covariates)
-                            
-                            effects=list(c(list(Intercept=1), #the Intercept
-                                           iset),  #the spatial index
-                                         #the covariates
-                                         list(covars_train)
-                            ), 
-                            #this is a quick name so you can call upon easily
-                            tag='train')
-    
-    
-    
-    covars_test <- test[,c("x3","x11","x15","x29","x30", "x31","x32","x35", "x36",
+  
+  
+  ########################
+  covars_train <- train[,c("x3","x11","x15","x29","x30", "x31","x32","x35", "x36",
                            "x39","x45","x46","x48","x51","x52","set_prov", "set_typ", 
-                           "prov", "IDsp")]; dim(covars_test)
-    ###################################
-    
-    ##==========================
-    
-    ###---Rerun INLA for model test prediction
-    model <-inla(formula, #the formula
-                 data=inla.stack.data(stk_train,spde=spde),  #the data stack
-                 family= 'gamma',   #which family the data comes from
-                 control.predictor=list(A=inla.stack.A(stk_train),compute=TRUE),  #compute gives you the marginals of the linear predictor
-                 control.compute = list(dic = TRUE, waic = TRUE, cpo=TRUE,config = TRUE), #model diagnostics and config = TRUE gives you the GMRF
-                 verbose = FALSE) #can include verbose=TRUE to see the log of the model runs
-    summary(model)
-    
-    
-    
-    
-    #######################----Extract Spatial Random effects
-    sfield_nodes_mean <- mod$summary.random$spatial.field['mean']
-    field_mean <- (A%*% as.data.frame(sfield_nodes_mean)[, 1])
-    
-    sfield_nodesL <- mod$summary.random$spatial.field['0.025quant']
-    fieldL <- (A%*% as.data.frame(sfield_nodesL)[, 1])
-    
-    sfield_nodesU<- mod$summary.random$spatial.field['0.975quant']
-    fieldU <- (A%*% as.data.frame(sfield_nodesU)[, 1])
-    
-    
-    
-    ###----Extract settlement type random effects
-    set <- set_t(dat, mod$summary.random$set_typ$mean)
-    setL <- set_t(dat, mod$summary.random$set_typ$`0.025quant`)
-    setU <- set_t(dat, mod$summary.random$set_typ$`0.975quant`)
-    
-    
-    ##--------
-    fixed <-  
-      model$summary.fixed['Intercept', 'mean'] +
-      model$summary.fixed['x3', 'mean']* test[,'x3'] +
-      model$summary.fixed['x11', 'mean'] * test[,'x11'] +
-      model$summary.fixed['x15', 'mean'] * test[,'x15'] +
-      model$summary.fixed['x29', 'mean'] * test[,'x29'] +
-      model$summary.fixed['x30', 'mean'] * test[,'x30'] + 
-      model$summary.fixed['x31', 'mean'] * test[,'x31'] +
-      model$summary.fixed['x32', 'mean'] * test[,'x32'] +
-      model$summary.fixed['x35', 'mean'] * test[,'x35'] +
-      model$summary.fixed['x36', 'mean'] * test[,'x36'] +
-      model$summary.fixed['x39', 'mean'] * test[,'x39'] +
-      model$summary.fixed['x45', 'mean'] * test[,'x45'] +
-      model$summary.fixed['x46', 'mean'] * test[,'x46'] +
-      model$summary.fixed['x48', 'mean',] * test[,'x48'] +
-      model$summary.fixed['x51', 'mean'] * test[,'x51'] +
-      model$summary.fixed['x52', 'mean'] * test[,'x52'] +
-      
-      mod$summary.random$IDsp['mean'][-train_ind,1] +
-      set[-train_ind] +
-      #rnorm(nrow(test),0, 1/model$summary.hyperpar$mean[1]) + #
-      field_mean[-train_ind,1]
-    
-    dens_ht <- exp(fixed)
-    sum(pop_ht <- dens_ht*test$bld_pred)
-    
-    
-    ###
-    
-    par(mfrow=c(2,2))
-    plot(test$POPN, pop_ht, xlab = "Observed", 
-         ylab = "Predicted", col=c('dark green','orange'),
-         pch=c(16,16), cex.axis=1.5)
-    abline(0,1)
-    legend("topleft", c("Observed", "Predicted"), col=c("dark green", "orange"), pch=c(16,16),
-           bty="n", cex=1.5) 
-    
-    
-    
-    (met <- mod_metrics(test$POPN,  
-                          pop_ht, pop_htU,  pop_htL, mod))
-    
-    
-    
-    
-    metrics_cv[i, ] <- as.vector(unlist(met)) 
-    
-    cvs[[i]] <- data.frame(test=test$POPN, pred=pop_ht, fold=rep(k_uniq[i], length(as.vector(pop_ht))))
-  }
+                           "prov", "IDsp")]; dim(covars_train)
+  
+  train$dens2 <- train$dens_tsbhm
+  #---Build the stack for the training set
+  stk_train <- inla.stack(data=list(y=train$dens2), #the response
+                          
+                          A=list(Ae,1),  #the A matrix; the 1 is included to make the list(covariates)
+                          
+                          effects=list(c(list(Intercept=1), #the Intercept
+                                         iset),  #the spatial index
+                                       #the covariates
+                                       list(covars_train)
+                          ), 
+                          #this is a quick name so you can call upon easily
+                          tag='train')
   
   
-  stat = data.frame(metrics =c("MAE", "RMSE", "BIAS","IMPRECISION","Accuracy"))
-  values = data.frame(metrics_cv)
-  rownames(values) = paste0("Fold_", 1:k_folds, sep="") 
   
-  metrics = bind_cols(stat, values)
+  covars_test <- test[,c("x3","x11","x15","x29","x30", "x31","x32","x35", "x36",
+                         "x39","x45","x46","x48","x51","x52","set_prov", "set_typ", 
+                         "prov", "IDsp")]; dim(covars_test)
+
   
-  return(list(metrics= metrics, data = cvs))
+  ###---Rerun INLA for model test prediction
+  model <-inla(f_tsbhm, #the formula
+               data=inla.stack.data(stk_train,spde=spde),  #the data stack
+               family= 'gamma',   #which family the data comes from
+               control.predictor=list(A=inla.stack.A(stk_train),compute=TRUE),  #compute gives you the marginals of the linear predictor
+               control.compute = list(dic = TRUE, waic = TRUE, cpo=TRUE,config = TRUE), #model diagnostics and config = TRUE gives you the GMRF
+               verbose = FALSE) #can include verbose=TRUE to see the log of the model runs
+  summary(model)
+  
+  
+  
+  mod = mod_tsbhm
+  #######################----Extract Spatial Random effects
+  sfield_nodes_mean <- mod$summary.random$spatial.field['mean']
+  field_mean <- (A%*% as.data.frame(sfield_nodes_mean)[, 1])
+  
+  
+  
+  
+  ###----Extract settlement type random effects
+  set <- set_t(dat, mod$summary.random$set_typ$mean)
+  
+  ##--------
+  fixed <-  
+    model$summary.fixed['Intercept', 'mean'] +
+    model$summary.fixed['x3', 'mean']* test[,'x3'] +
+    model$summary.fixed['x11', 'mean'] * test[,'x11'] +
+    model$summary.fixed['x15', 'mean'] * test[,'x15'] +
+    model$summary.fixed['x29', 'mean'] * test[,'x29'] +
+    model$summary.fixed['x30', 'mean'] * test[,'x30'] + 
+    model$summary.fixed['x31', 'mean'] * test[,'x31'] +
+    model$summary.fixed['x32', 'mean'] * test[,'x32'] +
+    model$summary.fixed['x35', 'mean'] * test[,'x35'] +
+    model$summary.fixed['x36', 'mean'] * test[,'x36'] +
+    model$summary.fixed['x39', 'mean'] * test[,'x39'] +
+    model$summary.fixed['x45', 'mean'] * test[,'x45'] +
+    model$summary.fixed['x46', 'mean'] * test[,'x46'] +
+    model$summary.fixed['x48', 'mean',] * test[,'x48'] +
+    model$summary.fixed['x51', 'mean'] * test[,'x51'] +
+    model$summary.fixed['x52', 'mean'] * test[,'x52'] +
+    
+    mod$summary.random$IDsp['mean'][-train_ind,1] +
+    set[-train_ind] +
+    field_mean[-train_ind,1]
+  
+  dens_ht <- exp(fixed)
+  sum(pop_ht <- dens_ht*test$bld_pred)
+  
+  
+  ### scatter plots 
+  par(mfrow=c(1,1))
+  plot(test$dens_tsbhm, dens_ht, xlab = "Observed", 
+       ylab = "Predicted", col=c('dark green','orange'),
+       pch=c(16,16), cex.axis=1.5)
+  abline(0,1)
+  legend("topleft", c("Observed", "Predicted"), col=c("dark green", "orange"), pch=c(16,16),
+         bty="n", cex=1.5) 
+  
+  # calculate fit metrics
+  (met_out <- mod_metrics2(test$dens_tsbhm,  
+                           dens_ht))
+  
+  met_list_out[[i]]<- unlist(met_out)
 }
-
-#print(nm)
-k_folds=5
-
-(cv1 <- cross_val(datt, mod1a, mesh, spde,#--TSBHM
-                 A, shp, form1a, k_folds))
-
-datt4 <- datt
-datt4$dens2 <- datt$dens3
-(cv2 <- cross_val(datt4, mod1b, mesh, spde,#--BHM
-                  A, shp, form1b, k_folds))
+met_list_out_dat <- do.call(rbind,met_list_out)
+metrics_out <- apply(met_list_out_dat, 2, mean)
 
 
-
-
-cv1$metrics
-cv2$metrics
-write.csv(cv, paste0(out_path, "/cross_validation.csv"))
-
-
-
-#mean(c(11781559, 11998136, 11852921, 11745906))
-
-# Basic scatter plot.
-dt1 <- data.frame(test = datt$POPN, pred=fit11a, fold=rep(0, nrow(datt)))
-dtt1 <- bind_rows(dt1, cv1$data[[1]], cv1$data[[2]],cv1$data[[3]],
-                 cv1$data[[4]],cv1$data[[5]])
-
-dtt1$fold1 <- factor(dtt1$fold)
-levels(dtt1$fold1) <- paste0("fold", 0:5, sep="")
-table(dtt1$fold1)
-
-
+# compare results 
+#rbind(met_dens[2,], metrics_out)
 ##----Save workspace
-save.image(paste0(results_path, "/workspace_gg_model.Rdata"))
+#save.image(paste0(results_path, "/workspace_gg_model.Rdata"))
