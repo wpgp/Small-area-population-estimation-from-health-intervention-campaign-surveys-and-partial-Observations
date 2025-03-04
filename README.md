@@ -32,6 +32,7 @@ use the command 'install.package("name of the package")' followed by 'library("n
 A  brief demostration of how to install an R package is provided below: 
 Assuming that I would like ton install the tidyverse package, I would type the following commands in R script window:
 install.packages("tidyverse")
+
 library(tidyverse)
 
 ## Instructions for use
@@ -53,5 +54,8 @@ There are four R scripts included within this folder:
 Below are two major input datasets used: 
 1) survey_data.RData: this is the main input data containing counts of people, building counts, and all the geospatial covariates prepared at the census unit level. (please use only 'survey_data.RData'. It contains a data frame called 'covs' which ais the main data. 
 2) cu_boundary.gpkg: this matches perfectly with the surv_data and contains most of the variables in the .csv file. The centroids of the c_boundary file is used as the longitude and latituide for the surv_data file. 
+
+## Other files
+We have included the supplementary document containing extra information that could not go into the main manuscript here. The file is called "Supplemental-Small-Area_Pop_Estimates.pdf"
 
 #### Please kindly leave us a feedback to help improve our future outputs. You can contact the corresponding author on cc.nnanatu@soton.ac.uk or nnanatuchibuzor@gmail.com - thanks! 
