@@ -2,10 +2,26 @@
 # Nnanatu et al. (2024)
 
 # System Requirements
-#(IMPORTANT NOTE: Please use R version 4.0.2 to reproduce the model results. There would be slight differences in the parameter estimates when different versions are used.)
+The R codes provided within this repository can be run within the operating system (e.g., Windows, Mac) of any machine with R software downloaded and installed. You can either use the latest R version or if you need to reproduce the model estimates, please kindly use R version 4.0.2. There would be slight differences in the parameter estimates when different versions of R are used.
 
-# Installation Guide
+# Installation Guide for R, RStudio and R packages
+## To install R on your machine (e.g., Windows Operating System), please 
+1) visit CRAN website (https://cran.r-project.org/)
+2) click on "Download R for Windows"
+3) click on "Install R for the first time": This allows you to download the R excutable file or .exe file
+4) Run the R executable file and follow the on-screen instructions on your screen and allow the app to make changes to your device.
+5) Choose the installation language and follow the on-screen instructions on your screen
+6) When completed, click on 'finish' and you are ready to launch R
 
+## To install RStudio on your machine (e.g., Windows Operating System), please 
+To download and install RStudio, do the following:
+1) Go to https://posit.co/download/rstudio-desktop/
+2) Click on "Download RStudio Desktop"
+3) Select the recommended version and save the executable file
+4) Run executable file while following the on-screen guide
+
+## To install R packages on your machine after the installation of R
+use the command 'install.package("name of the package")' followed by 'library("name of the package")' to have access to the libarary and depedencies. 
 
 # Demo
 
