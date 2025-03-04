@@ -1,6 +1,12 @@
 # Small-area-population-estimation-from-health-intervention-campaign-surveys-and-partial-Observations
 # Nnanatu et al. (2024)
 
+## Background
+This repository provides the R scripts for the implementation of the statistical modelling appraoch described within the 'Small-area-population-estimation-from-health-intervention-campaign-surveys-and-partial-Observations' paper. It also includes the key (aggregated and anonymized) input datasets used for the modelling. Please note that the datasets are included here for learning purposes only. Additionally, the simulation study R scripts are also included. 
+This ReadMe file contains names and the descriptions of the various R codes and the associated datasets to facilitate learning and reproducibility. The outlines are provided for ease of use by both beginners and advanced R programming language users. 
+
+Below, we provide the details of system requirements and software installation guides followed by the the descriptions of the R files and the associated data files. 
+
 # System Requirements
 The R codes provided within this repository can be run within the operating system (e.g., Windows, Mac) of any machine with R software downloaded and installed. You can either use the latest R version or if you need to reproduce the model estimates, please kindly use R version 4.0.2. There would be slight differences in the parameter estimates when different versions of R are used.
 
@@ -24,11 +30,13 @@ To download and install RStudio, do the following:
 use the command 'install.package("name of the package")' followed by 'library("name of the package")' to have access to the libarary and depedencies. 
 
 # Demo
+A  brief demostration of how to install an R package is provided below: 
+Assuming that I would like ton install the tidyverse package, I would type the following commands in R script window:
+install.packages("tidyverse")
+library(tidyverse)
 
 # Instructions for use
-This repository provides the R scripts for the 'Small area population estimation from health intervention data ...' paper. The scripts include the simulation study and the application to PNG datasets.  
 
-Below, the description of each of the files included within this repository is provided:
 
 # R scripts
 There are four R scripts included within this folder: 
