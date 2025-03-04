@@ -1,8 +1,15 @@
 # Small-area-population-estimation-from-health-intervention-campaign-surveys-and-partial-Observations
 # Nnanatu et al. (2024)
 
+# System Requirements
 #(IMPORTANT NOTE: Please use R version 4.0.2 to reproduce the model results. There would be slight differences in the parameter estimates when different versions are used.)
 
+# Installation Guide
+
+
+# Demo
+
+# Instructions for use
 This repository provides the R scripts for the 'Small area population estimation from health intervention data ...' paper. The scripts include the simulation study and the application to PNG datasets.  
 
 Below, the description of each of the files included within this repository is provided:
